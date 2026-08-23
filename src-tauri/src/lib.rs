@@ -321,10 +321,77 @@ fn debug_ping(msg: String) {
     println!("[hub] {msg}");
 }
 
+// ---------------------------------------------------------------------------
+// Settings: config.json in the app data dir
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Config {
+    engine: String,
+    mic: Option<String>,
+    groq_key: Option<String>,
+    autostart: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { engine: "auto".into(), mic: None, groq_key: None, autostart: false }
+    }
+}
+
+fn config_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("config.json"))
+}
+
+fn load_config(app: &AppHandle) -> Config {
+    let Some(path) = config_path(app) else { return Config::default() };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_config(app: AppHandle) -> Config {
+    load_config(&app)
+}
+
+#[tauri::command]
+fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt as _;
+    let path = config_path(&app).ok_or("no app data dir")?;
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())?;
+    // registry side effect; idempotent either way
+    let autolaunch = app.autolaunch();
+    if config.autostart {
+        autolaunch.enable().map_err(|e| e.to_string())?;
+    } else {
+        autolaunch.disable().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_mics(app: AppHandle) -> Vec<String> {
+    let _ = app;
+    cpal::default_host()
+        .input_devices()
+        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             spawn_hotkey_hook(app.handle().clone());
 
@@ -385,7 +452,10 @@ pub fn run() {
             list_history,
             delete_history,
             copy_text,
-            debug_ping
+            debug_ping,
+            get_config,
+            save_config,
+            list_mics
         ])
         .on_window_event(|window, event| {
             // Hub close hides to tray instead of quitting.
@@ -456,9 +526,10 @@ fn start_recording(app: &AppHandle) {
     let (tx, done) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
+    let mic = load_config(app).mic;
     // ponytail: dedicated blocking thread owns the !Send cpal Stream; 20ms poll is
     // noise next to human hotkey latency. Event-driven wake-up only if CPU ever matters.
-    tauri::async_runtime::spawn_blocking(move || record(flag, tx));
+    tauri::async_runtime::spawn_blocking(move || record(flag, tx, mic));
     *state = Some(Session { stop, done });
     println!("[pitch] recording…");
 }
@@ -479,8 +550,11 @@ fn stop_recording(app: &AppHandle) {
             Err(_) => return eprintln!("[pitch] recorder died"),
         };
 
-        let setting = std::env::var("PITCH_ENGINE").ok();
-        let list = engines(setting.as_deref(), model_dir().join("encoder.int8.onnx").exists());
+        let config = load_config(&app);
+        let list = engines(
+            Some(config.engine.as_str()),
+            model_dir().join("encoder.int8.onnx").exists(),
+        );
         let mut last_err = None;
         for engine in list {
             println!("[pitch] engine: {engine:?}");
@@ -492,8 +566,11 @@ fn stop_recording(app: &AppHandle) {
                         .unwrap_or_else(|e| Err(e.to_string()))
                 }
                 Engine::Cloud => {
-                    transcribe_cloud(encode_wav(&capture.samples, capture.rate, capture.channels))
-                        .await
+                    transcribe_cloud(
+                        encode_wav(&capture.samples, capture.rate, capture.channels),
+                        config.groq_key.clone(),
+                    )
+                    .await
                 }
             };
             match result {
@@ -535,11 +612,21 @@ fn stop_recording(app: &AppHandle) {
     });
 }
 
-fn record(stop: Arc<AtomicBool>, tx: mpsc::Sender<Result<Capture, String>>) {
+fn record(
+    stop: Arc<AtomicBool>,
+    tx: mpsc::Sender<Result<Capture, String>>,
+    mic: Option<String>,
+) {
     let res = (|| -> Result<Capture, String> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or("no microphone found")?;
+        let host = cpal::default_host();
+        let device = match &mic {
+            Some(name) => host
+                .input_devices()
+                .map_err(|e| e.to_string())?
+                .find(|d| d.name().map(|n| &n == name).unwrap_or(false))
+                .ok_or_else(|| format!("microphone '{name}' not found"))?,
+            None => host.default_input_device().ok_or("no microphone found")?,
+        };
         let cfg = device.default_input_config().map_err(|e| e.to_string())?;
         let (rate, ch, fmt) = (cfg.sample_rate().0, cfg.channels(), cfg.sample_format());
         println!("[pitch] mic open: {rate} Hz, {ch}ch, {fmt:?}");
@@ -664,8 +751,12 @@ fn downmix(samples: &[i16], channels: u16) -> Vec<f32> {
         .collect()
 }
 
-async fn transcribe_cloud(wav: Vec<u8>) -> Result<String, String> {
-    let key = std::env::var("GROQ_API_KEY").map_err(|_| "GROQ_API_KEY not set".to_string())?;
+async fn transcribe_cloud(wav: Vec<u8>, config_key: Option<String>) -> Result<String, String> {
+    // ponytail: env var kept as fallback for the pre-settings era
+    let key = config_key
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| std::env::var("GROQ_API_KEY").ok())
+        .ok_or("no Groq API key set (Settings → Groq API key)")?;
     let part = reqwest::multipart::Part::bytes(wav)
         .file_name("audio.wav")
         .mime_str("audio/wav")

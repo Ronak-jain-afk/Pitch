@@ -9,12 +9,39 @@
     <header>
       <h1>pitch</h1>
       <span id="stats"></span>
+      <button id="gear" title="Settings">⚙</button>
     </header>
     <div id="toolbar">
       <input id="search" type="search" placeholder="Search dictations…" autofocus />
       <button id="refresh" title="Refresh">↻</button>
     </div>
     <main id="list"></main>
+    <section id="settings" class="hidden">
+      <div class="field">
+        <label for="engineOpt">Transcription engine</label>
+        <select id="engineOpt">
+          <option value="auto">Auto — local Parakeet, Groq fallback</option>
+          <option value="local">Local only (offline)</option>
+          <option value="cloud">Cloud only (Groq)</option>
+        </select>
+        <p class="hint">Local runs on this PC via ONNX; cloud sends audio to Groq.</p>
+      </div>
+      <div class="field">
+        <label for="micOpt">Microphone</label>
+        <select id="micOpt"></select>
+      </div>
+      <div class="field">
+        <label for="gkey">Groq API key</label>
+        <input id="gkey" type="password" placeholder="gsk_…" autocomplete="off" />
+        <p class="hint">Needed for cloud mode and auto-fallback. Saved to config.json on this PC.</p>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="astart" />
+        Start pitch when Windows starts
+      </label>
+      <div id="cfgMsg"></div>
+      <button id="saveCfg">Save settings</button>
+    </section>
     <div id="empty" class="hidden">
       <p>No dictations yet.</p>
       <p class="hint">Hold <kbd>Ctrl</kbd>+<kbd>Win</kbd> anywhere and speak.</p>
@@ -114,6 +141,49 @@
       document.getElementById("refresh").addEventListener("click", refresh);
       listen("dictation", refresh);
       refresh();
+
+      // ---- settings view ----
+      const $ = (id) => document.getElementById(id);
+
+      async function loadSettings() {
+        const cfg = await inv("get_config");
+        $("engineOpt").value = cfg.engine;
+        $("gkey").value = cfg.groqKey || "";
+        $("astart").checked = !!cfg.autostart;
+        const sel = $("micOpt");
+        sel.innerHTML = "";
+        sel.append(new Option("System default", ""));
+        for (const m of await inv("list_mics")) sel.append(new Option(m, m));
+        sel.value = cfg.mic ?? "";
+        $("cfgMsg").textContent = "";
+      }
+
+      function showSettings(open) {
+        for (const id of ["list", "toolbar", "empty"]) {
+          $(id).classList.toggle("hidden", open);
+        }
+        $("settings").classList.toggle("hidden", !open);
+        if (open) loadSettings();
+      }
+
+      $("gear").onclick = () => showSettings($("settings").classList.contains("hidden"));
+
+      $("saveCfg").onclick = async () => {
+        try {
+          await inv("save_config", {
+            config: {
+              engine: $("engineOpt").value,
+              mic: $("micOpt").value || null,
+              groqKey: $("gkey").value.trim() || null,
+              autostart: $("astart").checked,
+            },
+          });
+          $("cfgMsg").textContent = "Saved ✓";
+          setTimeout(() => ($("cfgMsg").textContent = ""), 2000);
+        } catch (e) {
+          $("cfgMsg").textContent = `Save failed: ${e}`;
+        }
+      };
     </script>
   </body>
 </html>
