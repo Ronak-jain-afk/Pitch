@@ -12,15 +12,12 @@
       {
         "label": "main",
         "title": "pitch",
-        "width": 340,
-        "height": 88,
+        "width": 760,
+        "height": 560,
         "visible": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "resizable": false,
-        "transparent": true,
-        "center": true
+        "center": true,
+        "minWidth": 480,
+        "minHeight": 360
       }
     ],
     "security": {

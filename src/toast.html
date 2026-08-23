@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>pitch</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+        overflow: hidden;
+        user-select: none;
+      }
+      #status {
+        width: calc(100% - 24px);
+        text-align: center;
+        padding: 14px 18px;
+        border-radius: 14px;
+        background: rgba(28, 28, 30, 0.94);
+        color: #f5f5f7;
+        font-size: 14px;
+        line-height: 1.35;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status"></div>
+    <script>
+      function setStatus(msg) {
+        document.getElementById("status").textContent = msg;
+      }
+    </script>
+  </body>
+</html>

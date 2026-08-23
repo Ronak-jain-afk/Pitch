@@ -6,13 +6,114 @@
     <title>pitch</title>
   </head>
   <body>
-    <div id="status" class="hidden"></div>
+    <header>
+      <h1>pitch</h1>
+      <span id="stats"></span>
+    </header>
+    <div id="toolbar">
+      <input id="search" type="search" placeholder="Search dictations…" autofocus />
+      <button id="refresh" title="Refresh">↻</button>
+    </div>
+    <main id="list"></main>
+    <div id="empty" class="hidden">
+      <p>No dictations yet.</p>
+      <p class="hint">Hold <kbd>Ctrl</kbd>+<kbd>Win</kbd> anywhere and speak.</p>
+    </div>
     <script>
-      function setStatus(msg) {
-        const el = document.getElementById("status");
-        el.textContent = msg;
-        el.classList.remove("hidden");
+      // ponytail: headless diagnostics — failures surface via debug_ping in stdout
+      window.onerror = (m, s, l) => {
+        inv?.("debug_ping", { msg: `ERR ${l}: ${m}` }).catch(() => {});
+      };
+      const inv = window.__TAURI__?.core?.invoke;
+      if (!inv) document.title = "NO TAURI API";
+      const { listen } = window.__TAURI__?.event ?? {};
+      let all = [];
+
+      async function refresh() {
+        try {
+          all = await inv("list_history");
+          await inv("debug_ping", { msg: `loaded ${all.length} entries` });
+          render();
+        } catch (e) {
+          document.title = `INV FAIL: ${e}`;
+        }
       }
+
+      function dayLabel(ts) {
+        const d = new Date(ts);
+        const today = new Date();
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+        const sameDay = (a, b) => a.toDateString() === b.toDateString();
+        if (sameDay(d, today)) return "Today";
+        if (sameDay(d, yesterday)) return "Yesterday";
+        return d.toLocaleDateString(undefined, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+        });
+      }
+
+      function render() {
+        const q = document.getElementById("search").value.trim().toLowerCase();
+        const filtered = q ? all.filter((e) => e.text.toLowerCase().includes(q)) : all;
+        const list = document.getElementById("list");
+        list.innerHTML = "";
+        document.getElementById("empty").classList.toggle("hidden", filtered.length > 0);
+
+        const words = all.reduce((n, e) => n + e.text.split(/\s+/).filter(Boolean).length, 0);
+        document.getElementById("stats").textContent =
+          `${all.length} dictation${all.length === 1 ? "" : "s"} · ${words} words`;
+
+        let lastDay = null;
+        for (const e of filtered) {
+          const day = dayLabel(e.ts);
+          if (day !== lastDay) {
+            lastDay = day;
+            const h = document.createElement("h2");
+            h.textContent = day;
+            list.appendChild(h);
+          }
+          list.appendChild(row(e));
+        }
+      }
+
+      function row(e) {
+        const div = document.createElement("div");
+        div.className = "row";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const time = new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        meta.innerHTML = `<span class="time">${time}</span><span class="badge ${e.engine}">${e.engine}</span><span class="dur">${Math.round(e.ms / 100) / 10}s</span>`;
+
+        const text = document.createElement("p");
+        text.className = "text";
+        text.textContent = e.text;
+        text.title = "Click to copy";
+
+        const del = document.createElement("button");
+        del.className = "del";
+        del.title = "Delete";
+        del.textContent = "✕";
+        del.onclick = async () => {
+          if (await inv("delete_history", { ts: e.ts })) refresh();
+        };
+
+        div.append(meta, text, del);
+        div.onclick = async (ev) => {
+          if (ev.target === del) return;
+          await inv("copy_text", { text: e.text });
+          div.classList.add("copied");
+          setTimeout(() => div.classList.remove("copied"), 600);
+        };
+        return div;
+      }
+
+      document.getElementById("search").addEventListener("input", render);
+      document.getElementById("refresh").addEventListener("click", refresh);
+      listen("dictation", refresh);
+      refresh();
     </script>
   </body>
 </html>

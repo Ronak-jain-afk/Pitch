@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 const GROQ_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
@@ -83,6 +83,30 @@ impl ChordTracker {
 static TRACKER: Mutex<Option<ChordTracker>> = Mutex::new(None);
 static CHORD_TX: std::sync::OnceLock<mpsc::Sender<Chord>> = std::sync::OnceLock::new();
 static PILL_WINDOW: std::sync::OnceLock<tauri::WebviewWindow> = std::sync::OnceLock::new();
+static TOAST_WINDOW: std::sync::OnceLock<tauri::WebviewWindow> = std::sync::OnceLock::new();
+
+/// Frameless always-on-top overlay (pill, toast). ponytail: caller must keep the
+/// returned handle alive — dropping the last ref destroys the native window.
+fn build_overlay(
+    app: &AppHandle,
+    label: &str,
+    title: &str,
+    url: &str,
+    w: f64,
+    h: f64,
+) -> tauri::Result<tauri::WebviewWindow> {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(w, h)
+        .visible(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .transparent(true)
+        .shadow(false)
+        .build()
+}
 
 fn spawn_hotkey_hook(app: AppHandle) {
     let (tx, rx) = mpsc::channel();
@@ -197,6 +221,15 @@ enum Engine {
     Cloud,
 }
 
+impl Engine {
+    fn name(self) -> &'static str {
+        match self {
+            Engine::Local => "parakeet",
+            Engine::Cloud => "groq",
+        }
+    }
+}
+
 /// ponytail: PITCH_ENGINE=auto|local|cloud env for now; settings UI in Phase 2.
 /// auto = Parakeet first with Groq as fallback.
 fn engines(setting: Option<&str>, model_present: bool) -> Vec<Engine> {
@@ -213,6 +246,81 @@ fn model_dir() -> std::path::PathBuf {
         .join("models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8")
 }
 
+// ---------------------------------------------------------------------------
+// History: append-only JSONL in the app data dir
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Entry {
+    ts: u64,
+    text: String,
+    engine: String,
+    ms: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn history_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("history.jsonl"))
+}
+
+fn save_entry(app: &AppHandle, text: &str, engine: &str, ms: u64) {
+    let Some(path) = history_path(app) else { return };
+    let entry = Entry { ts: now_ms(), text: text.into(), engine: engine.into(), ms };
+    let Ok(line) = serde_json::to_string(&entry) else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn load_history(app: &AppHandle) -> Vec<Entry> {
+    let Some(path) = history_path(app) else { return vec![] };
+    let Ok(content) = std::fs::read_to_string(&path) else { return vec![] };
+    let mut entries: Vec<Entry> =
+        content.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    entries.sort_by(|a, b| b.ts.cmp(&a.ts));
+    entries
+}
+
+#[tauri::command]
+fn list_history(app: AppHandle) -> Vec<Entry> {
+    load_history(&app)
+}
+
+#[tauri::command]
+fn delete_history(app: AppHandle, ts: u64) -> bool {
+    let Some(path) = history_path(&app) else { return false };
+    let Ok(content) = std::fs::read_to_string(&path) else { return false };
+    let mut out = String::new();
+    for line in content.lines() {
+        match serde_json::from_str::<Entry>(line) {
+            Ok(e) if e.ts == ts => continue,
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    std::fs::write(&path, out).is_ok()
+}
+
+#[tauri::command]
+fn copy_text(app: AppHandle, text: String) -> bool {
+    app.clipboard().write_text(text).is_ok()
+}
+
+// ponytail: headless diagnostic channel for webview pages
+#[tauri::command]
+fn debug_ping(msg: String) {
+    println!("[hub] {msg}");
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -222,30 +330,22 @@ pub fn run() {
 
             // ponytail: built here instead of tauri.conf.json — conf-defined second
             // window silently never materialized on this machine.
-            // Handle must stay alive for the process lifetime: dropping the last
-            // WebviewWindow reference destroys the native window.
-            let pill = tauri::WebviewWindowBuilder::new(
-                app,
-                "pill",
-                tauri::WebviewUrl::App("pill.html".into()),
-            )
-            .title("pitch-pill")
-            .inner_size(260.0, 76.0)
-            .visible(false)
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .transparent(true)
-            .shadow(false)
-            .build()?;
+            let pill = build_overlay(app.handle(), "pill", "pitch-pill", "pill.html", 260.0, 76.0)?;
             let _ = PILL_WINDOW.set(pill);
+            let toast =
+                build_overlay(app.handle(), "toast", "pitch-toast", "toast.html", 340.0, 88.0)?;
+            let _ = TOAST_WINDOW.set(toast);
             for (label, _) in app.webview_windows() {
                 println!("[pitch] window created: {label}");
             }
 
-            let quit =
-                tauri::menu::MenuItem::with_id(app, "quit", "Quit pitch", true, None::<&str>)?;
+            let open_hub = tauri::menu::MenuItem::with_id(
+                app,
+                "open_hub",
+                "Open pitch",
+                true,
+                None::<&str>,
+            )?;
             let test = tauri::menu::MenuItem::with_id(
                 app,
                 "test_pill",
@@ -253,13 +353,21 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let menu = tauri::menu::Menu::with_items(app, &[&test, &quit])?;
+            let quit =
+                tauri::menu::MenuItem::with_id(app, "quit", "Quit pitch", true, None::<&str>)?;
+            let menu = tauri::menu::Menu::with_items(app, &[&open_hub, &test, &quit])?;
             tauri::tray::TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("pitch — hold Ctrl+Win to dictate")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => app.exit(0),
+                    "open_hub" => {
+                        if let Some(hub) = app.get_webview_window("main") {
+                            let _ = hub.show();
+                            let _ = hub.set_focus();
+                        }
+                    }
                     "test_pill" => {
                         show_pill(app);
                         let app = app.clone();
@@ -272,6 +380,21 @@ pub fn run() {
                 })
                 .build(app)?;
             Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_history,
+            delete_history,
+            copy_text,
+            debug_ping
+        ])
+        .on_window_event(|window, event| {
+            // Hub close hides to tray instead of quitting.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -312,10 +435,9 @@ fn hide_pill(app: &AppHandle) {
     });
 }
 
-/// Show a brief always-on-top status message and auto-hide. Doubled as the
-/// error surface until the Phase-2 overlay pill exists.
+/// Show a brief always-on-top status message and auto-hide.
 fn toast(app: &AppHandle, msg: &str, ms: u64) {
-    let Some(win) = app.get_webview_window("main") else { return };
+    let Some(win) = app.get_webview_window("toast") else { return };
     let json = serde_json::to_string(msg).unwrap_or_default();
     let _ = win.eval(&format!("setStatus({json})"));
     let _ = win.show();
@@ -383,6 +505,10 @@ fn stop_recording(app: &AppHandle) {
                 // First engine to produce text wins — the chain exists for
                 // transcription failures only, so stop here either way.
                 Ok(text) => {
+                    let audio_ms = capture.samples.len() as u64 * 1000
+                        / (capture.rate as u64 * capture.channels.max(1) as u64);
+                    save_entry(&app, &text, engine.name(), audio_ms);
+                    let _ = app.emit("dictation", ());
                     match paste(&app, &text) {
                         Ok(()) => {
                             let preview: String = text.chars().take(48).collect();
