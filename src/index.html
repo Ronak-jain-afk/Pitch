@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>pitch</title>
+  </head>
+  <body>
+    <div id="status" class="hidden"></div>
+    <script>
+      function setStatus(msg) {
+        const el = document.getElementById("status");
+        el.textContent = msg;
+        el.classList.remove("hidden");
+      }
+    </script>
+  </body>
+</html>
