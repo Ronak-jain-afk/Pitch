@@ -31,5 +31,6 @@ windows = { version = "0.58", features = [
 ] }
 reqwest = { version = "0.12", default-features = false, features = ["multipart", "rustls-tls"] }
 enigo = "0.2"
+regex = "1"
 sherpa-onnx = "1.13"
 

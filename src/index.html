@@ -9,6 +9,7 @@
     <header>
       <h1>pitch</h1>
       <span id="stats"></span>
+      <button id="book" title="Dictionary & Snippets">📖</button>
       <button id="gear" title="Settings">⚙</button>
     </header>
     <div id="toolbar">
@@ -41,6 +42,29 @@
       </label>
       <div id="cfgMsg"></div>
       <button id="saveCfg">Save settings</button>
+    </section>
+    <section id="dict" class="hidden">
+      <div class="view-head">
+        <h2>Dictionary &amp; Snippets</h2>
+        <button id="addRule">+ Add rule</button>
+      </div>
+      <div id="ruleForm" class="hidden">
+        <select id="ruleKind">
+          <option value="word">Word correction</option>
+          <option value="snippet">Snippet</option>
+        </select>
+        <input id="ruleFrom" placeholder='Heard / said… e.g. "my linkedin"' />
+        <input id="ruleTo" placeholder="Written as… e.g. https://linkedin.com/in/you" />
+        <div class="form-actions">
+          <button id="ruleSave">Save rule</button>
+          <button id="ruleCancel" class="ghost">Cancel</button>
+        </div>
+      </div>
+      <div id="ruleList"></div>
+      <p class="hint">
+        Word rules fix spelling after transcription (works on every engine). Snippets expand a
+        spoken cue into text. Both apply to every dictation.
+      </p>
     </section>
     <div id="empty" class="hidden">
       <p>No dictations yet.</p>
@@ -158,15 +182,23 @@
         $("cfgMsg").textContent = "";
       }
 
-      function showSettings(open) {
+      function showView(name) {
         for (const id of ["list", "toolbar", "empty"]) {
-          $(id).classList.toggle("hidden", open);
+          $(id).classList.toggle("hidden", name !== "history");
         }
-        $("settings").classList.toggle("hidden", !open);
-        if (open) loadSettings();
+        $("settings").classList.toggle("hidden", name !== "settings");
+        $("dict").classList.toggle("hidden", name !== "dict");
+        $("gear").classList.toggle("on", name === "settings");
+        $("book").classList.toggle("on", name === "dict");
+        if (name === "settings") loadSettings();
+        if (name === "dict") loadRules();
       }
 
-      $("gear").onclick = () => showSettings($("settings").classList.contains("hidden"));
+      $("gear").onclick = () =>
+        showView($("settings").classList.contains("hidden") ? "settings" : "history");
+
+      $("book").onclick = () =>
+        showView($("dict").classList.contains("hidden") ? "dict" : "history");
 
       $("saveCfg").onclick = async () => {
         try {
@@ -182,6 +214,105 @@
           setTimeout(() => ($("cfgMsg").textContent = ""), 2000);
         } catch (e) {
           $("cfgMsg").textContent = `Save failed: ${e}`;
+        }
+      };
+
+      // ---- dictionary & snippets ----
+      let editingRuleId = 0;
+
+      async function loadRules() {
+        const rules = await inv("list_rules");
+        const list = $("ruleList");
+        list.innerHTML = "";
+        if (!rules.length) {
+          list.innerHTML = '<p class="hint">No rules yet — add your first above.</p>';
+          return;
+        }
+        for (const r of rules) list.appendChild(ruleRow(r));
+      }
+
+      function ruleRow(r) {
+        const div = document.createElement("div");
+        div.className = "row rule";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.innerHTML = `<span class="badge ${r.kind}">${r.kind}</span>`;
+
+        const text = document.createElement("p");
+        text.className = "text";
+        const from = document.createElement("b");
+        from.textContent = r.from;
+        text.append(from, document.createTextNode(`  →  ${r.to}`));
+        if (!r.enabled) div.classList.add("off");
+
+        const actions = document.createElement("div");
+        actions.className = "rule-actions";
+
+        const toggle = document.createElement("button");
+        toggle.className = "ghost";
+        toggle.title = r.enabled ? "Disable" : "Enable";
+        toggle.textContent = r.enabled ? "⏸" : "▶";
+        toggle.onclick = async () => {
+          await inv("save_rule", { rule: { ...r, enabled: !r.enabled } });
+          loadRules();
+        };
+
+        const edit = document.createElement("button");
+        edit.className = "ghost";
+        edit.title = "Edit";
+        edit.textContent = "✎";
+        edit.onclick = () => {
+          editingRuleId = r.id;
+          $("ruleKind").value = r.kind;
+          $("ruleFrom").value = r.from;
+          $("ruleTo").value = r.to;
+          $("ruleForm").classList.remove("hidden");
+          $("ruleFrom").focus();
+        };
+
+        const del = document.createElement("button");
+        del.className = "del";
+        del.title = "Delete";
+        del.textContent = "✕";
+        del.onclick = async () => {
+          if (await inv("delete_rule", { id: r.id })) loadRules();
+        };
+
+        actions.append(toggle, edit, del);
+        div.append(meta, text, actions);
+        return div;
+      }
+
+      $("addRule").onclick = () => {
+        editingRuleId = 0;
+        $("ruleKind").value = "word";
+        $("ruleFrom").value = "";
+        $("ruleTo").value = "";
+        $("ruleForm").classList.remove("hidden");
+        $("ruleFrom").focus();
+      };
+
+      $("ruleCancel").onclick = () => $("ruleForm").classList.add("hidden");
+
+      $("ruleSave").onclick = async () => {
+        const from = $("ruleFrom").value.trim();
+        const to = $("ruleTo").value;
+        if (!from || !to) return;
+        try {
+          await inv("save_rule", {
+            rule: {
+              id: editingRuleId,
+              kind: $("ruleKind").value,
+              from,
+              to,
+              enabled: true,
+            },
+          });
+          $("ruleForm").classList.add("hidden");
+          loadRules();
+        } catch (e) {
+          $("ruleTo").placeholder = `Save failed: ${e}`;
         }
       };
     </script>

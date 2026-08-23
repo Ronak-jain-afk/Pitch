@@ -384,6 +384,121 @@ fn list_mics(app: AppHandle) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// Dictionary & snippets: rules.json — applied to every transcript
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Rule {
+    id: u64,
+    kind: String, // "word" | "snippet"
+    from: String,
+    to: String,
+    enabled: bool,
+}
+
+fn rules_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("rules.json"))
+}
+
+fn load_rules(app: &AppHandle) -> Vec<Rule> {
+    let Some(path) = rules_path(app) else { return vec![] };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn store_rules(app: &AppHandle, rules: &[Rule]) -> Result<(), String> {
+    let path = rules_path(app).ok_or("no app data dir")?;
+    let json = serde_json::to_string_pretty(rules).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_rules(app: AppHandle) -> Vec<Rule> {
+    load_rules(&app)
+}
+
+/// Upsert: assigns an id when rule.id is 0.
+#[tauri::command]
+fn save_rule(app: AppHandle, rule: Rule) -> Result<u64, String> {
+    let mut rules = load_rules(&app);
+    let id = if rule.id == 0 {
+        let id = rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        rules.push(Rule { id, ..rule });
+        id
+    } else {
+        let id = rule.id;
+        match rules.iter_mut().find(|r| r.id == id) {
+            Some(slot) => *slot = rule,
+            None => return Err(format!("rule {id} not found")),
+        }
+        id
+    };
+    store_rules(&app, &rules)?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn delete_rule(app: AppHandle, id: u64) -> bool {
+    let mut rules = load_rules(&app);
+    let before = rules.len();
+    rules.retain(|r| r.id != id);
+    rules.len() != before && store_rules(&app, &rules).is_ok()
+}
+
+/// One pass, longest-match-first, case-insensitive, word-bounded; replacement
+/// inserted verbatim. Covers both word corrections and snippet expansion.
+fn apply_rules(text: &str, rules: &[Rule]) -> String {
+    let mut alts: Vec<&Rule> =
+        rules.iter().filter(|r| r.enabled && !r.from.trim().is_empty()).collect();
+    if alts.is_empty() {
+        return text.to_string();
+    }
+    // longest first so "my linkedin" wins over "linkedin"
+    alts.sort_by(|a, b| b.from.chars().count().cmp(&a.from.chars().count()));
+    let mut map = std::collections::HashMap::new();
+    let mut pattern = String::new();
+    for r in &alts {
+        map.entry(r.from.to_lowercase()).or_insert(r.to.as_str());
+        if !pattern.is_empty() {
+            pattern.push('|');
+        }
+        pattern.push_str(&regex::escape(r.from.trim()));
+    }
+    let re = match regex::RegexBuilder::new(&format!(r"\b(?:{pattern})\b"))
+        .case_insensitive(true)
+        .build()
+    {
+        Ok(re) => re,
+        Err(_) => return text.to_string(),
+    };
+    re.replace_all(text, |caps: &regex::Captures| {
+        map.get(&caps[0].to_lowercase()).copied().unwrap_or(&caps[0]).to_string()
+    })
+    .into_owned()
+}
+
+/// Cloud-only soft bias: enabled word rules become a whisper `prompt` glossary.
+/// ponytail: ~4 chars/token heuristic against the 224-token cap.
+fn glossary(rules: &[Rule]) -> Option<String> {
+    let mut out = String::from("Glossary of correct spellings: ");
+    let mut any = false;
+    for r in rules.iter().filter(|r| r.enabled && r.kind == "word") {
+        let item = format!("{} = {}; ", r.from, r.to);
+        if out.chars().count() + item.chars().count() > 880 {
+            break;
+        }
+        out.push_str(&item);
+        any = true;
+    }
+    any.then_some(out)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -455,7 +570,10 @@ pub fn run() {
             debug_ping,
             get_config,
             save_config,
-            list_mics
+            list_mics,
+            list_rules,
+            save_rule,
+            delete_rule
         ])
         .on_window_event(|window, event| {
             // Hub close hides to tray instead of quitting.
@@ -551,6 +669,7 @@ fn stop_recording(app: &AppHandle) {
         };
 
         let config = load_config(&app);
+        let rules = load_rules(&app);
         let list = engines(
             Some(config.engine.as_str()),
             model_dir().join("encoder.int8.onnx").exists(),
@@ -569,6 +688,7 @@ fn stop_recording(app: &AppHandle) {
                     transcribe_cloud(
                         encode_wav(&capture.samples, capture.rate, capture.channels),
                         config.groq_key.clone(),
+                        glossary(&rules),
                     )
                     .await
                 }
@@ -581,7 +701,8 @@ fn stop_recording(app: &AppHandle) {
                 }
                 // First engine to produce text wins — the chain exists for
                 // transcription failures only, so stop here either way.
-                Ok(text) => {
+                Ok(raw) => {
+                    let text = apply_rules(&raw, &rules);
                     let audio_ms = capture.samples.len() as u64 * 1000
                         / (capture.rate as u64 * capture.channels.max(1) as u64);
                     save_entry(&app, &text, engine.name(), audio_ms);
@@ -751,7 +872,11 @@ fn downmix(samples: &[i16], channels: u16) -> Vec<f32> {
         .collect()
 }
 
-async fn transcribe_cloud(wav: Vec<u8>, config_key: Option<String>) -> Result<String, String> {
+async fn transcribe_cloud(
+    wav: Vec<u8>,
+    config_key: Option<String>,
+    prompt: Option<String>,
+) -> Result<String, String> {
     // ponytail: env var kept as fallback for the pre-settings era
     let key = config_key
         .filter(|k| !k.trim().is_empty())
@@ -761,15 +886,17 @@ async fn transcribe_cloud(wav: Vec<u8>, config_key: Option<String>) -> Result<St
         .file_name("audio.wav")
         .mime_str("audio/wav")
         .map_err(|e| e.to_string())?;
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", "whisper-large-v3-turbo")
+        .text("response_format", "text")
+        .part("file", part);
+    if let Some(p) = prompt {
+        form = form.text("prompt", p);
+    }
     let resp = reqwest::Client::new()
         .post(GROQ_URL)
         .bearer_auth(key)
-        .multipart(
-            reqwest::multipart::Form::new()
-                .text("model", "whisper-large-v3-turbo")
-                .text("response_format", "text")
-                .part("file", part),
-        )
+        .multipart(form)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -888,5 +1015,77 @@ mod tests {
         let text = super::transcribe_local(&cap).unwrap();
         println!("parakeet says: {text}");
         assert!(!text.trim().is_empty(), "expected actual words from sample audio");
+    }
+
+    fn rule(id: u64, kind: &str, from: &str, to: &str, enabled: bool) -> super::Rule {
+        super::Rule { id, kind: kind.into(), from: from.into(), to: to.into(), enabled }
+    }
+
+    #[test]
+    fn longest_match_wins() {
+        let rules = [
+            rule(1, "snippet", "linkedin", "https://li.example", true),
+            rule(2, "snippet", "my linkedin", "https://me.example", true),
+        ];
+        assert_eq!(
+            super::apply_rules("send it to my linkedin please", &rules),
+            "send it to https://me.example please"
+        );
+        assert_eq!(
+            super::apply_rules("check linkedin", &rules),
+            "check https://li.example"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_replacement_verbatim() {
+        let rules = [rule(1, "word", "get hub", "GitHub", true)];
+        assert_eq!(super::apply_rules("push it to Get Hub", &rules), "push it to GitHub");
+    }
+
+    #[test]
+    fn punctuation_adjacency_still_matches() {
+        let rules = [rule(1, "snippet", "my linkedin", "https://me.example", true)];
+        assert_eq!(
+            super::apply_rules("Sent. Check my linkedin.", &rules),
+            "Sent. Check https://me.example."
+        );
+    }
+
+    #[test]
+    fn disabled_and_empty_rules_skipped() {
+        let rules = [
+            rule(1, "word", "foo", "bar", false),
+            rule(2, "word", "   ", "x", true),
+        ];
+        assert_eq!(super::apply_rules("foo baz", &rules), "foo baz");
+    }
+
+    #[test]
+    fn no_rules_passthrough() {
+        assert_eq!(super::apply_rules("untouched", &[]), "untouched");
+    }
+
+    #[test]
+    fn every_occurrence_replaced() {
+        let rules = [rule(1, "word", "kubernetes", "K8s", true)];
+        assert_eq!(
+            super::apply_rules("kubernetes on Kubernetes", &rules),
+            "K8s on K8s"
+        );
+    }
+
+    #[test]
+    fn glossary_only_words_and_disabled_skipped() {
+        let rules = [
+            rule(1, "word", "get hub", "GitHub", true),
+            rule(2, "snippet", "my linkedin", "https://x", true),
+            rule(3, "word", "off", "OFF", false),
+        ];
+        let g = super::glossary(&rules).unwrap();
+        assert!(g.contains("get hub = GitHub"));
+        assert!(!g.contains("linkedin"));
+        assert!(!g.contains("OFF"));
+        assert!(super::glossary(&[]).is_none());
     }
 }

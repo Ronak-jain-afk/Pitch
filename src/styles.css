@@ -287,3 +287,144 @@ select:focus,
   color: #ff6b60;
 }
 
+/* dictionary & snippets */
+#book {
+  margin-left: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+#gear {
+  margin-left: 0;
+}
+
+header #stats {
+  margin-right: auto;
+}
+
+#book.on,
+#gear.on {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.view-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.view-head h2 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#addRule,
+#ruleSave {
+  background: var(--accent);
+  color: #08130a;
+  border: none;
+  border-radius: 9px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#addRule:hover,
+#ruleSave:hover {
+  filter: brightness(1.08);
+}
+
+#ruleForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid #2c2c2e;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+#ruleForm select,
+#ruleForm input {
+  background: var(--bg);
+  border: 1px solid #2c2c2e;
+  border-radius: 9px;
+  padding: 8px 11px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+#ruleForm input:focus,
+#ruleForm select:focus {
+  border-color: #3a3a3c;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid #2c2c2e;
+  border-radius: 9px;
+  color: var(--dim);
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button.ghost:hover {
+  color: var(--text);
+  border-color: #3a3a3c;
+}
+
+.row.rule .text {
+  font-size: 13.5px;
+}
+
+.row.rule .text b {
+  font-weight: 600;
+}
+
+.row.rule.off .text {
+  opacity: 0.45;
+}
+
+.badge.snippet {
+  color: #b78bff;
+  background: rgba(183, 139, 255, 0.12);
+}
+
+.badge.word {
+  color: #64b5ff;
+  background: rgba(100, 181, 255, 0.12);
+}
+
+.rule-actions {
+  display: flex;
+  gap: 4px;
+  align-items: start;
+}
+
+.rule-actions .ghost {
+  border: none;
+  padding: 4px 6px;
+  font-size: 13px;
+}
+
+
