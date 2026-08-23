@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>pitch</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+        overflow: hidden;
+        user-select: none;
+      }
+      #pill {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 15px 24px;
+        border-radius: 999px;
+        background: rgba(28, 28, 30, 0.92);
+        color: #f5f5f7;
+        font-size: 14px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+      }
+      .bars {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        height: 20px;
+      }
+      .bar {
+        width: 3px;
+        border-radius: 2px;
+        background: #4cd964;
+        height: 6px;
+      }
+      .active .bar { animation: bounce 0.9s ease-in-out infinite; }
+      .bar:nth-child(1) { animation-delay: 0s; }
+      .bar:nth-child(2) { animation-delay: 0.15s; }
+      .bar:nth-child(3) { animation-delay: 0.3s; }
+      .bar:nth-child(4) { animation-delay: 0.45s; }
+      .bar:nth-child(5) { animation-delay: 0.6s; }
+      @keyframes bounce {
+        0%, 100% { height: 6px; opacity: 0.7; }
+        50% { height: 18px; opacity: 1; }
+      }
+      #pill:not(.active) span { opacity: 0.75; }
+    </style>
+  </head>
+  <body>
+    <div id="pill">
+      <div class="bars">
+        <i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i>
+      </div>
+      <span>listening…</span>
+    </div>
+    <audio id="up" src="assets/ping-start.wav"></audio>
+    <audio id="down" src="assets/ping-stop.wav"></audio>
+    <script>
+      function setActive(on) {
+        document.getElementById("pill").classList.toggle("active", on);
+        const audio = document.getElementById(on ? "up" : "down");
+        if (!audio) return;
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      }
+    </script>
+  </body>
+</html>

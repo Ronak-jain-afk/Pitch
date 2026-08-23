@@ -82,6 +82,7 @@ impl ChordTracker {
 
 static TRACKER: Mutex<Option<ChordTracker>> = Mutex::new(None);
 static CHORD_TX: std::sync::OnceLock<mpsc::Sender<Chord>> = std::sync::OnceLock::new();
+static PILL_WINDOW: std::sync::OnceLock<tauri::WebviewWindow> = std::sync::OnceLock::new();
 
 fn spawn_hotkey_hook(app: AppHandle) {
     let (tx, rx) = mpsc::channel();
@@ -90,8 +91,14 @@ fn spawn_hotkey_hook(app: AppHandle) {
     tauri::async_runtime::spawn_blocking(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                Chord::Pressed => start_recording(&app),
-                Chord::Released => stop_recording(&app),
+                Chord::Pressed => {
+                    start_recording(&app);
+                    show_pill(&app);
+                }
+                Chord::Released => {
+                    stop_recording(&app);
+                    hide_pill(&app);
+                }
             }
         }
     });
@@ -213,15 +220,54 @@ pub fn run() {
         .setup(|app| {
             spawn_hotkey_hook(app.handle().clone());
 
+            // ponytail: built here instead of tauri.conf.json — conf-defined second
+            // window silently never materialized on this machine.
+            // Handle must stay alive for the process lifetime: dropping the last
+            // WebviewWindow reference destroys the native window.
+            let pill = tauri::WebviewWindowBuilder::new(
+                app,
+                "pill",
+                tauri::WebviewUrl::App("pill.html".into()),
+            )
+            .title("pitch-pill")
+            .inner_size(260.0, 76.0)
+            .visible(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .transparent(true)
+            .shadow(false)
+            .build()?;
+            let _ = PILL_WINDOW.set(pill);
+            for (label, _) in app.webview_windows() {
+                println!("[pitch] window created: {label}");
+            }
+
             let quit =
                 tauri::menu::MenuItem::with_id(app, "quit", "Quit pitch", true, None::<&str>)?;
-            let menu = tauri::menu::Menu::with_items(app, &[&quit])?;
+            let test = tauri::menu::MenuItem::with_id(
+                app,
+                "test_pill",
+                "Test pill",
+                true,
+                None::<&str>,
+            )?;
+            let menu = tauri::menu::Menu::with_items(app, &[&test, &quit])?;
             tauri::tray::TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("pitch — hold Ctrl+Win to dictate")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => app.exit(0),
+                    "test_pill" => {
+                        show_pill(app);
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(3000));
+                            hide_pill(&app);
+                        });
+                    }
                     _ => {}
                 })
                 .build(app)?;
@@ -229,6 +275,41 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Recording indicator: bottom-center pill with animated bars + pings.
+fn show_pill(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("pill") else {
+        eprintln!("[pitch] pill window NOT FOUND");
+        return;
+    };
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let size = monitor.size();
+        eprintln!("[pitch] monitor {}x{}, positioning pill", size.width, size.height);
+        let _ = win.set_position(tauri::PhysicalPosition::new(
+            (size.width as i32 - 260) / 2,
+            size.height as i32 - 160,
+        ));
+    } else {
+        eprintln!("[pitch] no primary monitor info, default position");
+    }
+    if let Err(e) = win.show() {
+        eprintln!("[pitch] pill show failed: {e}");
+    }
+    match win.eval("setActive(true)") {
+        Ok(()) => println!("[pitch] pill shown"),
+        Err(e) => eprintln!("[pill] eval failed: {e}"),
+    }
+}
+
+fn hide_pill(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("pill") else { return };
+    let _ = win.eval("setActive(false)");
+    // ponytail: delayed so the stop ping finishes before the webview sleeps
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = win.hide();
+    });
 }
 
 /// Show a brief always-on-top status message and auto-hide. Doubled as the
