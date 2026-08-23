@@ -641,7 +641,7 @@ pub fn run() {
             let menu = tauri::menu::Menu::with_items(app, &[&open_hub, &test, &quit])?;
             tauri::tray::TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("pitch — hold Ctrl+Win to dictate")
+                .tooltip("PITCH — hold Ctrl+Win to dictate")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => app.exit(0),
