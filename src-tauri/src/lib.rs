@@ -246,6 +246,98 @@ fn model_dir() -> std::path::PathBuf {
         .join("models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8")
 }
 
+/// Runtime resolution: bundled resources, then user-downloaded, then the dev
+/// checkout. ponytail: the old compile-time-only path broke in shipped builds.
+fn model_dir_for(app: &AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("models/parakeet-v2");
+        if p.join("encoder.int8.onnx").exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(data) = app.path().app_data_dir() {
+        let p = data.join("models/parakeet-v2");
+        if p.join("encoder.int8.onnx").exists() {
+            return Some(p);
+        }
+    }
+    let dev = model_dir();
+    dev.join("encoder.int8.onnx").exists().then_some(dev)
+}
+
+// ---------------------------------------------------------------------------
+// One-click local engine download (Hugging Face, individual files — no archive
+// step). ponytail: swap HF_BASE for our GitHub release mirror before shipping.
+// ---------------------------------------------------------------------------
+
+const HF_BASE: &str =
+    "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/";
+const MODEL_FILES: [&str; 4] =
+    ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"];
+
+static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn model_status(app: AppHandle) -> bool {
+    model_dir_for(&app).is_some()
+}
+
+#[tauri::command]
+async fn download_model(app: AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+    if DOWNLOADING.swap(true, Ordering::SeqCst) {
+        return Err("download already in progress".into());
+    }
+    let result = async {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("models/parakeet-v2");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        for file in MODEL_FILES {
+            download_file(&app, &dir, file).await?;
+        }
+        let _ = app.emit("model-dl", serde_json::json!({ "done": true }));
+        Ok(())
+    }
+    .await;
+    DOWNLOADING.store(false, Ordering::SeqCst);
+    result
+}
+
+async fn download_file(app: &AppHandle, dir: &std::path::Path, name: &str) -> Result<(), String> {
+    use std::io::Write;
+    use tauri::Emitter;
+    let dest = dir.join(name);
+    if dest.exists() {
+        return Ok(()); // resume-by-skip: finished files aren't re-fetched
+    }
+    let resp = reqwest::get(format!("{HF_BASE}{name}"))
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("{name}: {}", resp.status()));
+    }
+    let total = resp.content_length().unwrap_or(0);
+    let mut resp = resp;
+    let mut file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut done = 0u64;
+    let mut last_pct = 255u8;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        done += chunk.len() as u64;
+        if total > 0 {
+            let pct = ((done * 100) / total) as u8;
+            if pct != last_pct {
+                last_pct = pct;
+                let _ = app.emit("model-dl", serde_json::json!({ "file": name, "percent": pct }));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // History: append-only JSONL in the app data dir
 // ---------------------------------------------------------------------------
@@ -332,11 +424,18 @@ struct Config {
     mic: Option<String>,
     groq_key: Option<String>,
     autostart: bool,
+    theme: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { engine: "auto".into(), mic: None, groq_key: None, autostart: false }
+        Self {
+            engine: "auto".into(),
+            mic: None,
+            groq_key: None,
+            autostart: false,
+            theme: "light".into(),
+        }
     }
 }
 
@@ -365,11 +464,13 @@ fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
     let path = config_path(&app).ok_or("no app data dir")?;
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())?;
-    // registry side effect; idempotent either way
+    // registry side effect — only flip when state differs; disable() on an
+    // already-absent value errors with os error 2
     let autolaunch = app.autolaunch();
-    if config.autostart {
+    let enabled = autolaunch.is_enabled().unwrap_or(false);
+    if config.autostart && !enabled {
         autolaunch.enable().map_err(|e| e.to_string())?;
-    } else {
+    } else if !config.autostart && enabled {
         autolaunch.disable().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -573,7 +674,9 @@ pub fn run() {
             list_mics,
             list_rules,
             save_rule,
-            delete_rule
+            delete_rule,
+            model_status,
+            download_model
         ])
         .on_window_event(|window, event| {
             // Hub close hides to tray instead of quitting.
@@ -670,20 +773,22 @@ fn stop_recording(app: &AppHandle) {
 
         let config = load_config(&app);
         let rules = load_rules(&app);
-        let list = engines(
-            Some(config.engine.as_str()),
-            model_dir().join("encoder.int8.onnx").exists(),
-        );
+        let list = engines(Some(config.engine.as_str()), model_dir_for(&app).is_some());
         let mut last_err = None;
         for engine in list {
             println!("[pitch] engine: {engine:?}");
             let result = match engine {
-                Engine::Local => {
-                    let capture = capture.clone();
-                    tauri::async_runtime::spawn_blocking(move || transcribe_local(&capture))
+                Engine::Local => match model_dir_for(&app) {
+                    Some(dir) => {
+                        let capture = capture.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            transcribe_local(&capture, dir)
+                        })
                         .await
                         .unwrap_or_else(|e| Err(e.to_string()))
-                }
+                    }
+                    None => Err("local engine not installed (Settings → Local engine)".into()),
+                },
                 Engine::Cloud => {
                     transcribe_cloud(
                         encode_wav(&capture.samples, capture.rate, capture.channels),
@@ -828,13 +933,12 @@ static RECOGNIZER: Mutex<Option<sherpa_onnx::OfflineRecognizer>> = Mutex::new(No
 
 /// Parakeet-tdt-0.6b-v2 via sherpa-onnx, CPU. ponytail: model load (~1s) happens
 /// once on first dictation; move to startup if first-use latency ever annoys.
-fn transcribe_local(capture: &Capture) -> Result<String, String> {
+fn transcribe_local(capture: &Capture, dir: std::path::PathBuf) -> Result<String, String> {
     let mut guard = RECOGNIZER.lock().unwrap();
     let recognizer = match &*guard {
         Some(r) => r,
         None => {
             println!("[pitch] loading parakeet…");
-            let dir = model_dir();
             let config = sherpa_onnx::OfflineRecognizerConfig {
                 model_config: sherpa_onnx::OfflineModelConfig {
                     transducer: sherpa_onnx::OfflineTransducerModelConfig {
@@ -1012,7 +1116,7 @@ mod tests {
         let samples: Vec<i16> =
             wave.samples().iter().map(|s| (*s * 32767.0) as i16).collect();
         let cap = Capture { samples, rate: wave.sample_rate() as u32, channels: 1 };
-        let text = super::transcribe_local(&cap).unwrap();
+        let text = super::transcribe_local(&cap, dir).unwrap();
         println!("parakeet says: {text}");
         assert!(!text.trim().is_empty(), "expected actual words from sample audio");
     }
