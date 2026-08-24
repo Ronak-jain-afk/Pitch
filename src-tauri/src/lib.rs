@@ -19,6 +19,8 @@ const VK_LWIN: u32 = 0x5B;
 const VK_RWIN: u32 = 0x5C;
 const VK_LCONTROL: u32 = 0xA2;
 const VK_RCONTROL: u32 = 0xA3;
+const VK_CAPITAL: u32 = 0x14;
+const VK_F9: u32 = 0x78;
 
 #[derive(Debug, PartialEq)]
 enum Chord {
@@ -37,31 +39,73 @@ enum Action {
     CancelStartMenu,
 }
 
-/// Pure edge-detector for the Ctrl+Win chord so the tricky bits are unit-tested
-/// without Windows.
-#[derive(Default)]
+/// Hotkey presets: each entry is a group — one key from every group held
+/// simultaneously triggers the chord. Single-group presets are plain holds.
+fn preset_groups(preset: &str) -> Vec<Vec<u32>> {
+    match preset {
+        "caps" => vec![vec![VK_CAPITAL]],
+        "f9" => vec![vec![VK_F9]],
+        _ => vec![vec![VK_LCONTROL, VK_RCONTROL], vec![VK_LWIN, VK_RWIN]], // ctrl_win
+    }
+}
+
+/// Pure edge-detector for the configured hotkey so the tricky bits are
+/// unit-tested without Windows.
 struct ChordTracker {
-    ctrl: bool,
-    win: bool,
-    /// True while both keys are held (one Pressed / one Released per gesture).
+    groups: Vec<Vec<u32>>,
+    /// Held state per key, flattened across groups.
+    held: Vec<bool>,
+    /// True while the hotkey is fully held (one Pressed / one Released per gesture).
     engaged: bool,
-    /// True from first Pressed until both keys are fully released — spans the
-    /// window where one key is still held, so a late Win keyup gets swallowed.
+    /// True from first Pressed until every preset key is fully released — spans
+    /// the window where one key is still held, so a late Win keyup gets swallowed.
     gestured: bool,
+    /// Caps preset swallows its own key so it never reaches apps as a case toggle.
+    swallow_own_key: bool,
 }
 
 impl ChordTracker {
-    /// Feed one key event. Returns an optional chord transition plus the action
+    fn new(preset: &str) -> Self {
+        let groups = preset_groups(preset);
+        let held = vec![false; groups.iter().map(|g| g.len()).sum()];
+        Self {
+            swallow_own_key: preset == "caps",
+            groups,
+            held,
+            engaged: false,
+            gestured: false,
+        }
+    }
+
+    fn active(&self) -> bool {
+        let mut off = 0;
+        for g in &self.groups {
+            let any = (0..g.len()).any(|j| self.held[off + j]);
+            off += g.len();
+            if !any {
+                return false;
+            }
+        }
+        !self.groups.is_empty()
+    }
+
+    /// Feed one key event. Returns an optional hotkey transition plus the action
     /// the hook should take for this event.
     fn update(&mut self, vk: u32, down: bool) -> (Option<Chord>, Action) {
-        match vk {
-            VK_LWIN | VK_RWIN => self.win = down,
-            VK_LCONTROL | VK_RCONTROL => self.ctrl = down,
-            _ => {}
+        let mut idx = None;
+        let mut off = 0;
+        for g in &self.groups {
+            if let Some(j) = g.iter().position(|&k| k == vk) {
+                idx = Some(off + j);
+                break;
+            }
+            off += g.len();
         }
-        let active = self.ctrl && self.win;
+        if let Some(i) = idx {
+            self.held[i] = down;
+        }
         let mut event = None;
-        if active {
+        if self.active() {
             if !self.engaged {
                 self.engaged = true;
                 self.gestured = true;
@@ -71,9 +115,10 @@ impl ChordTracker {
             self.engaged = false;
             event = Some(Chord::Released);
         }
+        let our_win_up = !down && matches!(vk, VK_LWIN | VK_RWIN) && idx.is_some();
         let action =
-            if !down && (vk == VK_LWIN || vk == VK_RWIN) && self.gestured { Action::CancelStartMenu } else { Action::None };
-        if !self.ctrl && !self.win {
+            if our_win_up && self.gestured { Action::CancelStartMenu } else { Action::None };
+        if self.held.iter().all(|&h| !h) {
             self.gestured = false;
         }
         (event, action)
@@ -111,17 +156,31 @@ fn build_overlay(
 fn spawn_hotkey_hook(app: AppHandle) {
     let (tx, rx) = mpsc::channel();
     let _ = CHORD_TX.set(tx);
+    // Tracker is (re)built from config here and on every settings save, so
+    // hotkey changes apply without a restart.
+    *TRACKER.lock().unwrap() =
+        Some(ChordTracker::new(&load_config(&app).hotkey));
     // Drain thread does the slow work (mic open etc.) so the hook proc stays fast.
     tauri::async_runtime::spawn_blocking(move || {
         while let Ok(event) = rx.recv() {
             match event {
                 Chord::Pressed => {
-                    start_recording(&app);
-                    show_pill(&app);
+                    let toggle = load_config(&app).mode == "toggle";
+                    let recording =
+                        { app.state::<AppState>().inner().0.lock().unwrap().is_some() };
+                    if toggle && recording {
+                        stop_recording(&app);
+                        hide_pill(&app);
+                    } else {
+                        start_recording(&app);
+                        show_pill(&app);
+                    }
                 }
                 Chord::Released => {
-                    stop_recording(&app);
-                    hide_pill(&app);
+                    if load_config(&app).mode != "toggle" {
+                        stop_recording(&app);
+                        hide_pill(&app);
+                    }
                 }
             }
         }
@@ -148,9 +207,11 @@ unsafe fn keyboard_hook_loop() {
                 const WM_KEYDOWN: usize = 0x100;
                 const WM_SYSKEYDOWN: usize = 0x104;
                 let down = wparam.0 == WM_KEYDOWN || wparam.0 == WM_SYSKEYDOWN;
-                let (event, action) = {
+                let (event, action, swallow) = {
                     let mut guard = TRACKER.lock().unwrap();
-                    guard.get_or_insert_with(ChordTracker::default).update(kb.vkCode, down)
+                    let t = guard.get_or_insert_with(|| ChordTracker::new("ctrl_win"));
+                    let (event, action) = t.update(kb.vkCode, down);
+                    (event, action, t.swallow_own_key)
                 };
                 if let Some(event) = event {
                     if let Some(tx) = CHORD_TX.get() {
@@ -160,6 +221,11 @@ unsafe fn keyboard_hook_loop() {
                 // Always fall through — swallowing input is how Win gets stuck.
                 if action == Action::CancelStartMenu {
                     inject_ctrl_tap();
+                }
+                // Only the Caps preset eats its own key (so it never case-toggles);
+                // it has no other OS meaning, unlike Win/F9.
+                if swallow && kb.vkCode == VK_CAPITAL {
+                    return LRESULT(1);
                 }
             }
         }
@@ -430,6 +496,8 @@ struct Config {
     autostart: bool,
     theme: String,
     remove_fillers: bool,
+    hotkey: String,
+    mode: String,
 }
 
 impl Default for Config {
@@ -441,6 +509,8 @@ impl Default for Config {
             autostart: false,
             theme: "light".into(),
             remove_fillers: false,
+            hotkey: "ctrl_win".into(),
+            mode: "hold".into(),
         }
     }
 }
@@ -470,6 +540,8 @@ fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
     let path = config_path(&app).ok_or("no app data dir")?;
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())?;
+    // Re-arm the keyboard hook with the saved preset — hotkey edits apply live.
+    *TRACKER.lock().unwrap() = Some(ChordTracker::new(&config.hotkey));
     // registry side effect — only flip when state differs; disable() on an
     // already-absent value errors with os error 2
     let autolaunch = app.autolaunch();
@@ -1141,18 +1213,19 @@ mod tests {
 
     #[test]
     fn plain_win_tap_untouched() {
-        let mut t = ChordTracker::default();
+        let mut t = ChordTracker::new("ctrl_win");
         assert_eq!(t.update(LWIN, true), (None, Action::None), "win alone: no trigger");
         assert_eq!(
             t.update(LWIN, false),
             (None, Action::None),
             "start menu must still work, key-up never touched"
         );
+        assert!(!t.swallow_own_key);
     }
 
     #[test]
     fn full_cycle_and_cancel_start_menu() {
-        let mut t = ChordTracker::default();
+        let mut t = ChordTracker::new("ctrl_win");
         assert_eq!(t.update(RCTRL, true), (None, Action::None));
         assert_eq!(t.update(LWIN, true), (Some(Chord::Pressed), Action::None));
         assert_eq!(t.update(LWIN, true), (None, Action::None), "autorepeat ignored");
@@ -1169,7 +1242,7 @@ mod tests {
 
     #[test]
     fn ctrl_released_first_still_cancels_start_menu() {
-        let mut t = ChordTracker::default();
+        let mut t = ChordTracker::new("ctrl_win");
         t.update(LWIN, true);
         t.update(RCTRL, true);
         assert_eq!(t.update(RCTRL, false), (Some(Chord::Released), Action::None));
@@ -1179,6 +1252,40 @@ mod tests {
             "late win-up gets the cancel tap"
         );
         assert_eq!(t.update(LWIN, true), (None, Action::None), "no phantom press");
+    }
+
+    #[test]
+    fn mixed_sides_trigger_chord() {
+        let mut t = ChordTracker::new("ctrl_win");
+        assert_eq!(t.update(super::VK_LCONTROL, true), (None, Action::None));
+        assert_eq!(t.update(super::VK_RWIN, true), (Some(Chord::Pressed), Action::None));
+    }
+
+    #[test]
+    fn caps_preset_triggers_alone_and_swallows() {
+        let mut t = ChordTracker::new("caps");
+        assert!(t.swallow_own_key);
+        assert_eq!(
+            t.update(super::VK_CAPITAL, true),
+            (Some(Chord::Pressed), Action::None)
+        );
+        assert_eq!(
+            t.update(super::VK_CAPITAL, false),
+            (Some(Chord::Released), Action::None)
+        );
+        // a Win key-up is untouched when the preset has no Win in it
+        t.update(super::VK_CAPITAL, true);
+        t.update(super::VK_CAPITAL, false);
+        assert_eq!(t.update(LWIN, true), (None, Action::None));
+        assert_eq!(t.update(LWIN, false), (None, Action::None));
+    }
+
+    #[test]
+    fn f9_preset_triggers_alone() {
+        let mut t = ChordTracker::new("f9");
+        assert!(!t.swallow_own_key);
+        assert_eq!(t.update(super::VK_F9, true), (Some(Chord::Pressed), Action::None));
+        assert_eq!(t.update(super::VK_F9, false), (Some(Chord::Released), Action::None));
     }
 
     #[test]

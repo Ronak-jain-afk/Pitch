@@ -96,6 +96,22 @@
           <p class="hint" id="dlFile"></p>
         </div>
         <div class="field">
+          <label for="hkOpt">Hotkey</label>
+          <select id="hkOpt">
+            <option value="ctrl_win">Ctrl + Win</option>
+            <option value="caps">Caps Lock</option>
+            <option value="f9">F9</option>
+          </select>
+          <p class="hint">Applies immediately after saving. Caps Lock is reserved for dictation while selected.</p>
+        </div>
+        <div class="field">
+          <label for="modeOpt">Activation</label>
+          <select id="modeOpt">
+            <option value="hold">Hold to talk — record while held</option>
+            <option value="toggle">Toggle — press to start, press again to stop</option>
+          </select>
+        </div>
+        <div class="field">
           <label for="micOpt">Microphone</label>
           <select id="micOpt"></select>
         </div>
@@ -350,6 +366,8 @@
         $("gkey").value = cfg.groqKey || "";
         $("astart").checked = !!cfg.autostart;
         $("rfill").checked = !!cfg.removeFillers;
+        $("hkOpt").value = cfg.hotkey || "ctrl_win";
+        $("modeOpt").value = cfg.mode || "hold";
         const sel = $("micOpt");
         sel.innerHTML = "";
         sel.append(new Option("System default", ""));
@@ -387,6 +405,8 @@
           cfg.groqKey = $("gkey").value.trim() || null;
           cfg.autostart = $("astart").checked;
           cfg.removeFillers = $("rfill").checked;
+          cfg.hotkey = $("hkOpt").value;
+          cfg.mode = $("modeOpt").value;
           await inv("save_config", { config: cfg });
           $("cfgMsg").textContent = "Saved ✓";
           $("cfgMsg").classList.remove("err");
