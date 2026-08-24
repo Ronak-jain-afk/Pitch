@@ -511,10 +511,17 @@ input:focus {
 }
 
 /* ---- settings ---- */
+/* Scroll at full pane width so the scrollbar hugs the right edge; only the
+   content itself is constrained. */
 #settings {
-  max-width: 540px;
   overflow-y: auto;
   padding-bottom: 10px;
+}
+
+#settings .field,
+#settings .check,
+#settings .form-actions {
+  max-width: 540px;
 }
 
 .field {
