@@ -617,14 +617,22 @@ fn is_undo_command(text: &str) -> bool {
 }
 
 /// Spoken layout cues: "new paragraph" → blank line, "new line"/"newline" → break.
-/// Surrounding single spaces are consumed so joins are clean.
+/// Surrounding single spaces and any punctuation stuck to the cue by the ASR
+/// ("new paragraph.") are consumed — the cue ends the line, it isn't a sentence.
 fn apply_line_commands(text: &str) -> String {
     static PARA: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static LINE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let para =
-        PARA.get_or_init(|| regex::RegexBuilder::new(r" ?\bnew paragraphs?\b ?").case_insensitive(true).build().unwrap());
+    let para = PARA.get_or_init(|| {
+        regex::RegexBuilder::new(r" ?\bnew paragraphs?\b[,.!?;:]* ?")
+            .case_insensitive(true)
+            .build()
+            .unwrap()
+    });
     let line = LINE.get_or_init(|| {
-        regex::RegexBuilder::new(r" ?\b(?:new lines?|newlines?)\b ?").case_insensitive(true).build().unwrap()
+        regex::RegexBuilder::new(r" ?\b(?:new lines?|newlines?)\b[,.!?;:]* ?")
+            .case_insensitive(true)
+            .build()
+            .unwrap()
     });
     let out = para.replace_all(text, "\n\n");
     line.replace_all(&out, "\n").into_owned()
@@ -1326,5 +1334,17 @@ mod tests {
             "\n\nat start"
         );
         assert_eq!(super::apply_line_commands("draw a new lineart"), "draw a new lineart");
+    }
+
+    #[test]
+    fn line_commands_consume_asr_punctuation() {
+        assert_eq!(
+            super::apply_line_commands("how are you doing? new line, I'm doing fine"),
+            "how are you doing?\nI'm doing fine"
+        );
+        assert_eq!(
+            super::apply_line_commands("greeting. new paragraph. thank you."),
+            "greeting.\n\nthank you."
+        );
     }
 }
