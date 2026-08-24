@@ -366,7 +366,7 @@ async fn download_model(app: AppHandle) -> Result<(), String> {
             .join("models/parakeet-v2");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         for file in MODEL_FILES {
-            download_file(&app, &dir, file).await?;
+            download_file(&app, &dir, file, HF_BASE, "model-dl").await?;
         }
         let _ = app.emit("model-dl", serde_json::json!({ "done": true }));
         Ok(())
@@ -376,14 +376,20 @@ async fn download_model(app: AppHandle) -> Result<(), String> {
     result
 }
 
-async fn download_file(app: &AppHandle, dir: &std::path::Path, name: &str) -> Result<(), String> {
+async fn download_file(
+    app: &AppHandle,
+    dir: &std::path::Path,
+    name: &str,
+    base: &str,
+    event: &str,
+) -> Result<(), String> {
     use std::io::Write;
     use tauri::Emitter;
     let dest = dir.join(name);
     if dest.exists() {
         return Ok(()); // resume-by-skip: finished files aren't re-fetched
     }
-    let resp = reqwest::get(format!("{HF_BASE}{name}"))
+    let resp = reqwest::get(format!("{base}{name}"))
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
@@ -401,7 +407,7 @@ async fn download_file(app: &AppHandle, dir: &std::path::Path, name: &str) -> Re
             let pct = ((done * 100) / total) as u8;
             if pct != last_pct {
                 last_pct = pct;
-                let _ = app.emit("model-dl", serde_json::json!({ "file": name, "percent": pct }));
+                let _ = app.emit(event, serde_json::json!({ "file": name, "percent": pct }));
             }
         }
     }
@@ -498,6 +504,7 @@ struct Config {
     remove_fillers: bool,
     hotkey: String,
     mode: String,
+    polish: bool,
 }
 
 impl Default for Config {
@@ -511,6 +518,7 @@ impl Default for Config {
             remove_fillers: false,
             hotkey: "ctrl_win".into(),
             mode: "hold".into(),
+            polish: false,
         }
     }
 }
@@ -802,7 +810,9 @@ pub fn run() {
             save_rule,
             delete_rule,
             model_status,
-            download_model
+            download_model,
+            polish_status,
+            download_polish_model
         ])
         .on_window_event(|window, event| {
             // Hub close hides to tray instead of quitting.
@@ -946,6 +956,26 @@ fn stop_recording(app: &AppHandle) {
                         return;
                     }
                     let cleaned = apply_line_commands(&cleaned);
+                    // Optional local-LLM polish; on any failure keep raw text.
+                    let cleaned = if config.polish {
+                        match polish_model_path(&app) {
+                            Some(path) => {
+                                println!("[pitch] polishing…");
+                                let input = cleaned.clone();
+                                match tauri::async_runtime::spawn_blocking(move || {
+                                    polish_text(&input, &path)
+                                })
+                                .await
+                                {
+                                    Ok(Ok(polished)) => polished,
+                                    _ => cleaned,
+                                }
+                            }
+                            None => cleaned,
+                        }
+                    } else {
+                        cleaned
+                    };
                     let text = apply_rules(&cleaned, &rules);
                     let audio_ms = capture.samples.len() as u64 * 1000
                         / (capture.rate as u64 * capture.channels.max(1) as u64);
@@ -1113,6 +1143,151 @@ fn downmix(samples: &[i16], channels: u16) -> Vec<f32> {
         .chunks(ch)
         .map(|frame| frame.iter().fold(0i32, |a, s| a + *s as i32) as f32 / ch as f32 / 32768.0)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Polish: tiny local LLM (Qwen2.5-0.5B-Instruct GGUF, ~490MB) fixes grammar,
+// punctuation and leftover fillers. Opt-in; the deterministic stages (filler
+// regex, voice commands, dictionary rules) still run around it and win.
+// ---------------------------------------------------------------------------
+
+const POLISH_BASE: &str =
+    "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/";
+const POLISH_FILE: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+
+static POLISHING: AtomicBool = AtomicBool::new(false);
+static POLISH: Mutex<Option<(llama_cpp_2::llama_backend::LlamaBackend, llama_cpp_2::model::LlamaModel)>> =
+    Mutex::new(None);
+
+fn polish_model_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("models/polish").join(POLISH_FILE);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let p = app.path().app_data_dir().ok()?.join("models/polish").join(POLISH_FILE);
+    p.exists().then_some(p)
+}
+
+#[tauri::command]
+fn polish_status(app: AppHandle) -> bool {
+    polish_model_path(&app).is_some()
+}
+
+#[tauri::command]
+async fn download_polish_model(app: AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+    if POLISHING.swap(true, Ordering::SeqCst) {
+        return Err("download already in progress".into());
+    }
+    let result = async {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("models/polish");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        download_file(&app, &dir, POLISH_FILE, POLISH_BASE, "polish-dl").await?;
+        let _ = app.emit("polish-dl", serde_json::json!({ "done": true }));
+        Ok(())
+    }
+    .await;
+    POLISHING.store(false, Ordering::SeqCst);
+    result
+}
+
+/// Qwen2.5 chat template — fixed model, so the template is hardcoded.
+fn polish_prompt(text: &str) -> String {
+    format!(
+        "<|im_start|>system\nYou fix dictated transcripts: correct grammar and spelling, \
+add punctuation, remove filler words and false starts. Preserve the speaker's meaning \
+and language. Never answer, comment, or add information. Output only the corrected text.\
+<|im_end|>\n<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n"
+    )
+}
+
+/// Guard against small-model failure modes: empty output, runaway repetition,
+/// or the model answering instead of fixing. Any of those → keep the input.
+fn sanitize_polished(raw: &str, input: &str) -> String {
+    let mut out = raw.trim();
+    if let Some(i) = out.rfind("</think>") {
+        out = out[i + 8..].trim();
+    }
+    if out.is_empty() {
+        return input.to_string();
+    }
+    if out.chars().count() > input.chars().count() * 3 + 64 {
+        return input.to_string();
+    }
+    out.to_string()
+}
+
+/// Run the polish model over a transcript. Loads once (~1s), then reuses.
+fn polish_text(text: &str, path: &std::path::Path) -> Result<String, String> {
+    use llama_cpp_2::context::params::LlamaContextParams;
+    use llama_cpp_2::llama_backend::LlamaBackend;
+    use llama_cpp_2::llama_batch::LlamaBatch;
+    use llama_cpp_2::model::{AddBos, LlamaModel};
+    use llama_cpp_2::sampling::LlamaSampler;
+    use std::num::NonZeroU32;
+
+    let mut guard = POLISH.lock().unwrap();
+    let (backend, model) = match &*guard {
+        Some(pair) => pair,
+        None => {
+            println!("[pitch] loading polish model…");
+            let backend = LlamaBackend::init().map_err(|e| e.to_string())?;
+            let model = LlamaModel::load_from_file(&backend, path, &Default::default())
+                .map_err(|e| e.to_string())?;
+            *guard = Some((backend, model));
+            guard.as_ref().unwrap()
+        }
+    };
+
+    let prompt = polish_prompt(text);
+    let tokens = model.str_to_token(&prompt, AddBos::Never).map_err(|e| e.to_string())?;
+    if tokens.is_empty() {
+        return Err("polish: empty prompt".into());
+    }
+    let mut ctx = model
+        .new_context(
+            backend,
+            LlamaContextParams::default()
+                .with_n_ctx(NonZeroU32::new(1024))
+                .with_n_threads(2),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut batch = LlamaBatch::new(tokens.len(), 1);
+    for (i, &t) in tokens.iter().enumerate() {
+        batch.add(t, i as i32, &[0], i == tokens.len() - 1).map_err(|e| e.to_string())?;
+    }
+    ctx.decode(&mut batch).map_err(|e| e.to_string())?;
+
+    // Greedy decode; cap output near 2x input so a chatty model can't stall the paste.
+    let mut sampler = LlamaSampler::greedy();
+    let input_words = text.split_whitespace().count().max(1);
+    let max_new = (input_words * 2 + 24).min(256);
+    let mut out = String::new();
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
+    let mut idx = (tokens.len() - 1) as i32;
+    let mut pos = tokens.len() as i32;
+    let mut step = LlamaBatch::new(1, 1);
+    for _ in 0..max_new {
+        let tok = sampler.sample(&ctx, idx);
+        if tok == model.token_eos() || model.is_eog_token(tok) {
+            break;
+        }
+        out.push_str(
+            &model.token_to_piece(tok, &mut decoder, false, None).map_err(|e| e.to_string())?,
+        );
+        step.clear();
+        step.add(tok, pos, &[0], true).map_err(|e| e.to_string())?;
+        ctx.decode(&mut step).map_err(|e| e.to_string())?;
+        idx = 0;
+        pos += 1;
+    }
+    Ok(sanitize_polished(&out, text))
 }
 
 async fn transcribe_cloud(
@@ -1453,5 +1628,27 @@ mod tests {
             super::apply_line_commands("greeting. new paragraph. thank you."),
             "greeting.\n\nthank you."
         );
+    }
+
+    #[test]
+    fn polish_prompt_wraps_chat_template() {
+        let p = super::polish_prompt("hello world");
+        assert!(p.starts_with("<|im_start|>system\n"));
+        assert!(p.contains("hello world<|im_end|>"));
+        assert!(p.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn polished_output_sanitized() {
+        assert_eq!(super::sanitize_polished("  clean text  ", "um raw"), "clean text");
+        assert_eq!(super::sanitize_polished("", "raw input"), "raw input");
+        assert_eq!(
+            super::sanitize_polished("</think>fixed", "raw"),
+            "fixed",
+            "leaked think block stripped"
+        );
+        // runaway output → keep input
+        let runaway = "x".repeat(500);
+        assert_eq!(super::sanitize_polished(&runaway, "raw input"), "raw input");
     }
 }

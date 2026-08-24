@@ -33,4 +33,6 @@ reqwest = { version = "0.12", default-features = false, features = ["multipart",
 enigo = "0.2"
 regex = "1"
 sherpa-onnx = "1.13"
+llama-cpp-2 = { version = "0.1", default-features = false }
+encoding_rs = "0.8.35"
 

@@ -565,8 +565,9 @@ input:focus {
   color: var(--danger);
 }
 
-/* local engine card */
-#modelCard {
+/* local engine cards */
+#modelCard,
+#polishCard {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -576,15 +577,18 @@ input:focus {
   padding: 14px 16px;
 }
 
-body.dark #modelCard {
+body.dark #modelCard,
+body.dark #polishCard {
   background: #16171a;
 }
 
-#modelCard b {
+#modelCard b,
+#polishCard b {
   font-size: 13.5px;
 }
 
-#dlBar {
+#dlBar,
+#polishBar {
   margin-top: 8px;
   height: 8px;
   border-radius: 999px;
@@ -592,7 +596,8 @@ body.dark #modelCard {
   overflow: hidden;
 }
 
-#dlFill {
+#dlFill,
+#polishFill {
   height: 100%;
   width: 0%;
   border-radius: 999px;

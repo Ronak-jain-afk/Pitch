@@ -112,6 +112,25 @@
           </select>
         </div>
         <div class="field">
+          <label class="check">
+            <input type="checkbox" id="polish" />
+            AI polish — fix grammar &amp; punctuation with a tiny local model
+          </label>
+          <div id="polishCard">
+            <div>
+              <b id="polishState">Checking…</b>
+              <p class="hint" id="polishHint">
+                Qwen2.5-0.5B runs on this PC — offline, private, adds ~1-2s per dictation.
+              </p>
+            </div>
+            <button id="dlPolish" class="primary">Download (~490 MB)</button>
+          </div>
+          <div id="polishBar" class="hidden">
+            <div id="polishFill"></div>
+          </div>
+          <p class="hint" id="polishDlFile"></p>
+        </div>
+        <div class="field">
           <label for="micOpt">Microphone</label>
           <select id="micOpt"></select>
         </div>
@@ -368,6 +387,8 @@
         $("rfill").checked = !!cfg.removeFillers;
         $("hkOpt").value = cfg.hotkey || "ctrl_win";
         $("modeOpt").value = cfg.mode || "hold";
+        $("polish").checked = !!cfg.polish;
+        setPolishUI(await inv("polish_status"));
         const sel = $("micOpt");
         sel.innerHTML = "";
         sel.append(new Option("System default", ""));
@@ -407,6 +428,7 @@
           cfg.removeFillers = $("rfill").checked;
           cfg.hotkey = $("hkOpt").value;
           cfg.mode = $("modeOpt").value;
+          cfg.polish = $("polish").checked;
           await inv("save_config", { config: cfg });
           $("cfgMsg").textContent = "Saved ✓";
           $("cfgMsg").classList.remove("err");
@@ -415,6 +437,52 @@
           $("cfgMsg").textContent = `Save failed: ${e}`;
           $("cfgMsg").classList.add("err");
         }
+      };
+
+      // ---- AI polish model ----
+      function setPolishUI(installed) {
+        $("dlPolish").classList.toggle("hidden", installed);
+        $("polishBar").classList.toggle("hidden", true);
+        $("polishDlFile").textContent = "";
+        if (installed) {
+          $("polishState").textContent = "Installed ✓";
+          $("polishHint").textContent = "Dictations get a grammar pass on this PC before your dictionary rules apply.";
+        } else {
+          $("polishState").textContent = "Not installed";
+          $("polishHint").textContent =
+            "Optional ~490 MB one-time download. Until then the filler-word regex covers cleanup.";
+        }
+      }
+
+      let polishDlStarted = false;
+      listen("polish-dl", (e) => {
+        const p = e.payload;
+        if (p.done) {
+          setPolishUI(true);
+          polishDlStarted = false;
+          return;
+        }
+        $("polishBar").classList.remove("hidden");
+        $("polishFill").style.width = `${p.percent}%`;
+        $("polishDlFile").textContent = `${p.file} — ${p.percent}%`;
+      }).catch(() => {});
+
+      $("dlPolish").onclick = async () => {
+        if (polishDlStarted) return;
+        polishDlStarted = true;
+        $("dlPolish").disabled = true;
+        $("dlPolish").textContent = "Downloading…";
+        $("polishBar").classList.remove("hidden");
+        try {
+          await inv("download_polish_model");
+          setPolishUI(true);
+        } catch (e) {
+          $("polishState").textContent = "Download failed";
+          $("polishDlFile").textContent = String(e);
+        }
+        $("dlPolish").disabled = false;
+        $("dlPolish").textContent = "Download (~490 MB)";
+        polishDlStarted = false;
       };
 
       // ---- dictionary & snippets ----
