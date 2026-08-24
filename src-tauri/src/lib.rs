@@ -425,6 +425,7 @@ struct Config {
     groq_key: Option<String>,
     autostart: bool,
     theme: String,
+    remove_fillers: bool,
 }
 
 impl Default for Config {
@@ -435,6 +436,7 @@ impl Default for Config {
             groq_key: None,
             autostart: false,
             theme: "light".into(),
+            remove_fillers: false,
         }
     }
 }
@@ -582,6 +584,25 @@ fn apply_rules(text: &str, rules: &[Rule]) -> String {
         map.get(&caps[0].to_lowercase()).copied().unwrap_or(&caps[0]).to_string()
     })
     .into_owned()
+}
+
+/// Strip filler words ("um", "uh", "erm", "hmm"…). Word-bounded, case-insensitive,
+/// then tidies the seams: space before punctuation, doubled spaces, edge trim.
+fn remove_fillers(text: &str) -> String {
+    static FILLER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static PUNCT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let filler = FILLER.get_or_init(|| {
+        regex::RegexBuilder::new(r"\b(?:um+|uh+|erm+|hm+)\b ?")
+            .case_insensitive(true)
+            .build()
+            .unwrap()
+    });
+    let punct = PUNCT.get_or_init(|| regex::Regex::new(r"\s+([,.!?;:])").unwrap());
+    let spaces = SPACES.get_or_init(|| regex::Regex::new(r"[ \t]{2,}").unwrap());
+    let out = filler.replace_all(text, "");
+    let out = punct.replace_all(&out, "$1");
+    spaces.replace_all(&out, " ").trim().to_string()
 }
 
 /// Cloud-only soft bias: enabled word rules become a whisper `prompt` glossary.
@@ -807,7 +828,9 @@ fn stop_recording(app: &AppHandle) {
                 // First engine to produce text wins — the chain exists for
                 // transcription failures only, so stop here either way.
                 Ok(raw) => {
-                    let text = apply_rules(&raw, &rules);
+                    let cleaned =
+                        if config.remove_fillers { remove_fillers(&raw) } else { raw };
+                    let text = apply_rules(&cleaned, &rules);
                     let audio_ms = capture.samples.len() as u64 * 1000
                         / (capture.rate as u64 * capture.channels.max(1) as u64);
                     save_entry(&app, &text, engine.name(), audio_ms);
@@ -1191,5 +1214,19 @@ mod tests {
         assert!(!g.contains("linkedin"));
         assert!(!g.contains("OFF"));
         assert!(super::glossary(&[]).is_none());
+    }
+
+    #[test]
+    fn fillers_removed_with_seam_cleanup() {
+        assert_eq!(super::remove_fillers("um so this is uh great"), "so this is great");
+        assert_eq!(super::remove_fillers("Um hello"), "hello");
+        assert_eq!(super::remove_fillers("wait um, what"), "wait, what");
+        assert_eq!(super::remove_fillers("hmm okay then"), "okay then");
+    }
+
+    #[test]
+    fn fillers_never_eat_real_words() {
+        assert_eq!(super::remove_fillers("an album column of hummus"), "an album column of hummus");
+        assert_eq!(super::remove_fillers("no fillers here"), "no fillers here");
     }
 }

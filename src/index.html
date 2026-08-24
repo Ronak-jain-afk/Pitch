@@ -105,6 +105,10 @@
           <p class="hint">Needed for cloud mode and auto-fallback. Saved to config.json on this PC.</p>
         </div>
         <label class="check">
+          <input type="checkbox" id="rfill" />
+          Remove filler words ("um", "uh", "hmm"…) from dictations
+        </label>
+        <label class="check">
           <input type="checkbox" id="astart" />
           Start pitch when Windows starts
         </label>
@@ -163,13 +167,30 @@
           (e) => new Date(e.ts).toDateString() === new Date().toDateString()
         );
         const todaySecs = Math.round(today.reduce((n, e) => n + e.ms, 0) / 1000);
+        const spoken = all.filter((e) => e.ms > 0);
+        const spokenWords = spoken.reduce(
+          (n, e) => n + e.text.split(/\s+/).filter(Boolean).length,
+          0
+        );
+        const wpm = spoken.length
+          ? Math.round(spokenWords / (spoken.reduce((n, e) => n + e.ms, 0) / 60000))
+          : 0;
+        const days = new Set(all.map((e) => new Date(e.ts).toDateString()));
+        const cursor = new Date();
+        if (!days.has(cursor.toDateString())) cursor.setDate(cursor.getDate() - 1);
+        let streak = 0;
+        while (days.has(cursor.toDateString())) {
+          streak++;
+          cursor.setDate(cursor.getDate() - 1);
+        }
         $("stats").textContent = filtered.length
           ? `${filtered.length} shown`
           : "";
         $("cards").innerHTML = `
           <div class="card blue"><b>${all.length}</b><span>dictations</span></div>
           <div class="card lav"><b>${words}</b><span>words dictated</span></div>
-          <div class="card mint"><b>${today.length}</b><span>today · ${Math.floor(todaySecs / 60)}m ${todaySecs % 60}s</span></div>`;
+          <div class="card mint"><b>${today.length}</b><span>today · ${Math.floor(todaySecs / 60)}m ${todaySecs % 60}s</span></div>
+          <div class="card cream"><b>${streak}d</b><span>streak · ${wpm} wpm</span></div>`;
 
         let lastDay = null;
         for (const e of filtered) {
@@ -328,6 +349,7 @@
         $("engineOpt").value = cfg.engine;
         $("gkey").value = cfg.groqKey || "";
         $("astart").checked = !!cfg.autostart;
+        $("rfill").checked = !!cfg.removeFillers;
         const sel = $("micOpt");
         sel.innerHTML = "";
         sel.append(new Option("System default", ""));
@@ -357,14 +379,15 @@
 
       $("saveCfg").onclick = async () => {
         try {
-          await inv("save_config", {
-            config: {
-              engine: $("engineOpt").value,
-              mic: $("micOpt").value || null,
-              groqKey: $("gkey").value.trim() || null,
-              autostart: $("astart").checked,
-            },
-          });
+          // mutate the stored config instead of rebuilding it — rebuilding
+          // silently reset fields not present in the form (e.g. theme)
+          const cfg = await inv("get_config");
+          cfg.engine = $("engineOpt").value;
+          cfg.mic = $("micOpt").value || null;
+          cfg.groqKey = $("gkey").value.trim() || null;
+          cfg.autostart = $("astart").checked;
+          cfg.removeFillers = $("rfill").checked;
+          await inv("save_config", { config: cfg });
           $("cfgMsg").textContent = "Saved ✓";
           $("cfgMsg").classList.remove("err");
           setTimeout(() => ($("cfgMsg").textContent = ""), 2000);
