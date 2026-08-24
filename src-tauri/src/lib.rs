@@ -200,8 +200,12 @@ unsafe fn inject_ctrl_tap() {
 // Recording pipeline
 // ---------------------------------------------------------------------------
 
+/// Second slot: when the last paste happened — arms "scratch that" undo for a
+/// short window so a late undo never eats unrelated manual edits.
 #[derive(Default)]
-struct AppState(Mutex<Option<Session>>);
+struct AppState(Mutex<Option<Session>>, Mutex<Option<std::time::Instant>>);
+
+const UNDO_WINDOW_SECS: u64 = 120;
 
 struct Session {
     stop: Arc<AtomicBool>,
@@ -605,6 +609,27 @@ fn remove_fillers(text: &str) -> String {
     spaces.replace_all(&out, " ").trim().to_string()
 }
 
+/// True when the entire transcript is just an undo request.
+fn is_undo_command(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    let t = t.trim_end_matches(['.', ',', '!', '?']).trim();
+    matches!(t, "scratch that" | "undo that")
+}
+
+/// Spoken layout cues: "new paragraph" → blank line, "new line"/"newline" → break.
+/// Surrounding single spaces are consumed so joins are clean.
+fn apply_line_commands(text: &str) -> String {
+    static PARA: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static LINE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let para =
+        PARA.get_or_init(|| regex::RegexBuilder::new(r" ?\bnew paragraphs?\b ?").case_insensitive(true).build().unwrap());
+    let line = LINE.get_or_init(|| {
+        regex::RegexBuilder::new(r" ?\b(?:new lines?|newlines?)\b ?").case_insensitive(true).build().unwrap()
+    });
+    let out = para.replace_all(text, "\n\n");
+    line.replace_all(&out, "\n").into_owned()
+}
+
 /// Cloud-only soft bias: enabled word rules become a whisper `prompt` glossary.
 /// ponytail: ~4 chars/token heuristic against the 224-token cap.
 fn glossary(rules: &[Rule]) -> Option<String> {
@@ -830,6 +855,17 @@ fn stop_recording(app: &AppHandle) {
                 Ok(raw) => {
                     let cleaned =
                         if config.remove_fillers { remove_fillers(&raw) } else { raw };
+                    // Voice command: undo the previous dictation instead of
+                    // transcribing this one. Not saved to history.
+                    if is_undo_command(&cleaned) {
+                        if undo_last_paste(&app) {
+                            toast(&app, "↩ Undid last dictation", 1800);
+                        } else {
+                            toast(&app, "Nothing recent to undo", 2500);
+                        }
+                        return;
+                    }
+                    let cleaned = apply_line_commands(&cleaned);
                     let text = apply_rules(&cleaned, &rules);
                     let audio_ms = capture.samples.len() as u64 * 1000
                         / (capture.rate as u64 * capture.channels.max(1) as u64);
@@ -1035,8 +1071,15 @@ async fn transcribe_cloud(
     Ok(body)
 }
 
+/// Paste via clipboard without destroying its previous contents: capture what
+/// was there, paste, then restore once the target app has consumed the paste
+/// (skipped if the user copied something new in the meantime). Arms the undo.
 fn paste(app: &AppHandle, text: &str) -> Result<(), Err> {
+    let prev = app.clipboard().read_text().ok();
+    // ponytail: non-text clipboards (images/files) can't be restored — read_text
+    // fails, prev is None, our text stays on the clipboard.
     app.clipboard().write_text(text.to_string()).map_err(|e| e.to_string())?;
+    *app.state::<AppState>().inner().1.lock().unwrap() = Some(std::time::Instant::now());
     // ponytail: 80ms so the target window regains focus after hotkey release
     std::thread::sleep(std::time::Duration::from_millis(80));
     use enigo::{Direction, Key, Keyboard};
@@ -1044,7 +1087,41 @@ fn paste(app: &AppHandle, text: &str) -> Result<(), Err> {
     enigo.key(Key::Control, Direction::Press).map_err(|e| e.to_string())?;
     enigo.key(Key::Unicode('v'), Direction::Click).map_err(|e| e.to_string())?;
     enigo.key(Key::Control, Direction::Release).map_err(|e| e.to_string())?;
+    let app = app.clone();
+    let mine = text.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if app.clipboard().read_text().ok().as_deref() == Some(mine.as_str()) {
+            if let Some(prev) = prev {
+                let _ = app.clipboard().write_text(prev);
+            }
+        }
+    });
     Ok(())
+}
+
+/// Revert the most recent dictation via the target app's own Ctrl+Z. Only works
+/// within UNDO_WINDOW_SECS of a paste; returns false (and does nothing) if no
+/// recent paste or the keystroke couldn't be sent.
+fn undo_last_paste(app: &AppHandle) -> bool {
+    let recent = {
+        let mut slot = app.state::<AppState>().inner().1.lock().unwrap();
+        match *slot {
+            Some(t) if t.elapsed().as_secs() < UNDO_WINDOW_SECS => {
+                *slot = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if !recent {
+        return false;
+    }
+    use enigo::{Direction, Key, Keyboard};
+    let Ok(mut enigo) = enigo::Enigo::new(&enigo::Settings::default()) else { return false };
+    enigo.key(Key::Control, Direction::Press).is_ok()
+        && enigo.key(Key::Unicode('z'), Direction::Click).is_ok()
+        && enigo.key(Key::Control, Direction::Release).is_ok()
 }
 
 #[cfg(test)]
@@ -1228,5 +1305,26 @@ mod tests {
     fn fillers_never_eat_real_words() {
         assert_eq!(super::remove_fillers("an album column of hummus"), "an album column of hummus");
         assert_eq!(super::remove_fillers("no fillers here"), "no fillers here");
+    }
+
+    #[test]
+    fn undo_command_needs_exact_phrase() {
+        assert!(super::is_undo_command("scratch that"));
+        assert!(super::is_undo_command("  Undo that. "));
+        assert!(!super::is_undo_command("scratch that and try again"));
+        assert!(!super::is_undo_command("undo the settings"));
+        assert!(!super::is_undo_command(""));
+    }
+
+    #[test]
+    fn line_commands_expand_and_consume_spaces() {
+        assert_eq!(super::apply_line_commands("point one new paragraph point two"), "point one\n\npoint two");
+        assert_eq!(super::apply_line_commands("a new line b"), "a\nb");
+        assert_eq!(super::apply_line_commands("x newline y"), "x\ny");
+        assert_eq!(
+            super::apply_line_commands("New Paragraph at start"),
+            "\n\nat start"
+        );
+        assert_eq!(super::apply_line_commands("draw a new lineart"), "draw a new lineart");
     }
 }
