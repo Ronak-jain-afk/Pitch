@@ -9,22 +9,22 @@
     <aside id="rail">
       <div class="logo">p</div>
       <nav>
-        <button data-view="history" class="on" title="History">
+        <button data-view="history" class="on" title="History" aria-label="History">
           <svg viewBox="0 0 24 24"><path d="M12 8v4l3 2M21 12a9 9 0 1 1-9-9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button data-view="dict" title="Dictionary">
+        <button data-view="dict" title="Dictionary" aria-label="Dictionary">
           <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button data-view="snippets" title="Snippets">
+        <button data-view="snippets" title="Snippets" aria-label="Snippets">
           <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </nav>
       <div class="spacer"></div>
       <nav class="bottom">
-        <button id="themeBtn" title="Toggle dark mode">
+        <button id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">
           <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button data-view="settings" title="Settings">
+        <button data-view="settings" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.5a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2l.4 2.5h4l.4-2.5a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.06-.4.1-.8.1-1.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
         </button>
       </nav>
@@ -37,15 +37,13 @@
       </header>
 
       <section id="historyView">
-        <div id="cards"></div>
         <div id="toolbar">
-          <input id="search" type="search" placeholder="Search dictations…" autofocus />
-          <button id="refresh" title="Refresh">↻</button>
+          <input id="search" type="search" placeholder="Search dictations…" aria-label="Search dictations" autofocus />
         </div>
-        <main id="list"></main>
+        <div id="list"></div>
         <div id="empty" class="hidden">
-          <p>Nothing dictated yet.</p>
-          <p class="hint">Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> anywhere and speak.</p>
+          <p id="emptyTitle">Nothing dictated yet.</p>
+          <p class="hint" id="emptyHint">Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> anywhere and speak.</p>
         </div>
       </section>
 
@@ -70,6 +68,7 @@
       </section>
 
       <section id="settings" class="hidden">
+        <h3 class="group">Transcription &amp; AI</h3>
         <div class="field">
           <label for="engineOpt">Transcription engine</label>
           <select id="engineOpt">
@@ -95,23 +94,7 @@
           </div>
           <p class="hint" id="dlFile"></p>
         </div>
-        <div class="field">
-          <label for="hkOpt">Hotkey</label>
-          <select id="hkOpt">
-            <option value="ctrl_win">Ctrl + Win</option>
-            <option value="caps">Caps Lock</option>
-            <option value="f9">F9</option>
-          </select>
-          <p class="hint">Applies immediately after saving. Caps Lock is reserved for dictation while selected.</p>
-        </div>
-        <div class="field">
-          <label for="modeOpt">Activation</label>
-          <select id="modeOpt">
-            <option value="hold">Hold to talk — record while held</option>
-            <option value="toggle">Toggle — press to start, press again to stop</option>
-          </select>
-        </div>
-        <label class="check" style="margin-top: 14px">
+        <label class="check">
           <input type="checkbox" id="polish" />
           AI polish — fix grammar &amp; punctuation with a tiny local model
         </label>
@@ -130,29 +113,50 @@
           </div>
           <p class="hint" id="polishDlFile"></p>
         </div>
-        <div class="field">
-          <label for="micOpt">Microphone</label>
-          <select id="micOpt"></select>
-        </div>
-        <div class="field">
-          <label for="gkey">Groq API key</label>
-          <input id="gkey" type="password" placeholder="gsk_…" autocomplete="off" />
-          <p class="hint">Needed for cloud mode and auto-fallback. Saved to config.json on this PC.</p>
-        </div>
         <label class="check">
           <input type="checkbox" id="rfill" />
           Remove filler words ("um", "uh", "hmm"…) from dictations
         </label>
+        <div class="field">
+          <label for="gkey">Groq API key</label>
+          <input id="gkey" type="password" placeholder="gsk_…" autocomplete="off" />
+          <p class="hint">Needed for cloud mode and auto-fallback. Create a free key at console.groq.com/keys — it stays in config.json on this PC.</p>
+        </div>
+
+        <h3 class="group">Capture</h3>
+        <div class="field">
+          <label for="hkOpt">Hotkey</label>
+          <select id="hkOpt">
+            <option value="ctrl_win">Ctrl + Win</option>
+            <option value="caps">Caps Lock</option>
+            <option value="f9">F9</option>
+          </select>
+          <p class="hint">Applies immediately after saving. Caps Lock is reserved for dictation while selected.</p>
+        </div>
+        <div class="field">
+          <label for="modeOpt">Activation</label>
+          <select id="modeOpt">
+            <option value="hold">Hold to talk — record while held</option>
+            <option value="toggle">Toggle — press to start, press again to stop</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="micOpt">Microphone</label>
+          <select id="micOpt" aria-label="Microphone"></select>
+        </div>
+
+        <h3 class="group">General</h3>
         <label class="check">
           <input type="checkbox" id="astart" />
           Start pitch when Windows starts
         </label>
         <div class="form-actions">
           <button id="saveCfg" class="primary">Save settings</button>
-          <span id="cfgMsg"></span>
+          <span id="cfgMsg" aria-live="polite"></span>
         </div>
       </section>
     </main>
+    <span id="live" class="sr-only" aria-live="polite"></span>
 
     <script>
       // ponytail: headless diagnostics — failures surface via debug_ping in stdout
@@ -195,37 +199,21 @@
         const filtered = q ? all.filter((e) => e.text.toLowerCase().includes(q)) : all;
         const list = $("list");
         list.innerHTML = "";
-        $("empty").classList.toggle("hidden", filtered.length > 0);
-
-        const words = all.reduce((n, e) => n + e.text.split(/\s+/).filter(Boolean).length, 0);
-        const today = all.filter(
-          (e) => new Date(e.ts).toDateString() === new Date().toDateString()
-        );
-        const todaySecs = Math.round(today.reduce((n, e) => n + e.ms, 0) / 1000);
-        const spoken = all.filter((e) => e.ms > 0);
-        const spokenWords = spoken.reduce(
-          (n, e) => n + e.text.split(/\s+/).filter(Boolean).length,
-          0
-        );
-        const wpm = spoken.length
-          ? Math.round(spokenWords / (spoken.reduce((n, e) => n + e.ms, 0) / 60000))
-          : 0;
-        const days = new Set(all.map((e) => new Date(e.ts).toDateString()));
-        const cursor = new Date();
-        if (!days.has(cursor.toDateString())) cursor.setDate(cursor.getDate() - 1);
-        let streak = 0;
-        while (days.has(cursor.toDateString())) {
-          streak++;
-          cursor.setDate(cursor.getDate() - 1);
+        const empty = $("empty");
+        if (filtered.length) {
+          empty.classList.add("hidden");
+        } else if (all.length && q) {
+          $("emptyTitle").textContent = `No matches for "${$("search").value.trim()}"`;
+          $("emptyHint").textContent = "Try a shorter or different search.";
+          empty.classList.remove("hidden");
+        } else {
+          $("emptyTitle").textContent = "Nothing dictated yet.";
+          $("emptyHint").innerHTML = 'Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> anywhere and speak.';
+          empty.classList.remove("hidden");
         }
-        $("stats").textContent = filtered.length
-          ? `${filtered.length} shown`
+        $("stats").textContent = all.length
+          ? (q ? `${filtered.length} shown of ${all.length}` : `${all.length} dictations`)
           : "";
-        $("cards").innerHTML = `
-          <div class="card blue"><b>${all.length}</b><span>dictations</span></div>
-          <div class="card lav"><b>${words}</b><span>words dictated</span></div>
-          <div class="card mint"><b>${today.length}</b><span>today · ${Math.floor(todaySecs / 60)}m ${todaySecs % 60}s</span></div>
-          <div class="card cream"><b>${streak}d</b><span>streak · ${wpm} wpm</span></div>`;
 
         let lastDay = null;
         for (const e of filtered) {
@@ -243,6 +231,9 @@
       function row(e) {
         const div = document.createElement("div");
         div.className = "row";
+        div.tabIndex = 0;
+        div.setAttribute("role", "button");
+        div.setAttribute("aria-label", `Copy dictation: ${e.text.slice(0, 80)}`);
 
         const meta = document.createElement("div");
         meta.className = "meta";
@@ -257,23 +248,58 @@
         const del = document.createElement("button");
         del.className = "del";
         del.title = "Delete";
+        del.setAttribute("aria-label", "Delete dictation");
         del.textContent = "✕";
-        del.onclick = async () => {
-          if (await inv("delete_history", { ts: e.ts })) refresh();
+        // Two-state confirm: first click arms, second click within 3s deletes.
+        del.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (!del.dataset.armed) {
+            del.dataset.armed = "1";
+            del.classList.add("confirm");
+            del.textContent = "Delete?";
+            del.setAttribute("aria-label", "Confirm delete");
+            setTimeout(() => {
+              if (!del.isConnected || !del.dataset.armed) return;
+              delete del.dataset.armed;
+              del.classList.remove("confirm");
+              del.textContent = "✕";
+              del.setAttribute("aria-label", "Delete dictation");
+            }, 3000);
+            return;
+          }
+          if (await inv("delete_history", { ts: e.ts })) {
+            $("live").textContent = "Dictation deleted";
+            refresh();
+          }
+        };
+
+        const copy = async () => {
+          await inv("copy_text", { text: e.text });
+          $("live").textContent = "Copied to clipboard";
+          div.classList.add("copied");
+          setTimeout(() => div.classList.remove("copied"), 600);
         };
 
         div.append(meta, text, del);
-        div.onclick = async (ev) => {
+        div.onclick = (ev) => {
           if (ev.target === del) return;
-          await inv("copy_text", { text: e.text });
-          div.classList.add("copied");
-          setTimeout(() => div.classList.remove("copied"), 600);
+          copy();
+        };
+        div.onkeydown = (ev) => {
+          if (ev.target !== div) return; // nested delete button handles its own keys
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            copy();
+          }
         };
         return div;
       }
 
-      document.getElementById("search").addEventListener("input", render);
-      document.getElementById("refresh").addEventListener("click", refresh);
+      let searchTimer;
+      document.getElementById("search").addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(render, 150);
+      });
       listen("dictation", refresh);
       refresh();
 
@@ -521,6 +547,7 @@
         const toggle = document.createElement("button");
         toggle.className = "ghost";
         toggle.title = r.enabled ? "Disable" : "Enable";
+        toggle.setAttribute("aria-label", (r.enabled ? "Disable" : "Enable") + " rule");
         toggle.textContent = r.enabled ? "⏸" : "▶";
         toggle.onclick = async () => {
           await inv("save_rule", { rule: { ...r, enabled: !r.enabled } });
@@ -530,6 +557,7 @@
         const edit = document.createElement("button");
         edit.className = "ghost";
         edit.title = "Edit";
+        edit.setAttribute("aria-label", "Edit rule");
         edit.textContent = "✎";
         edit.onclick = () => {
           editingRuleId = r.id;
@@ -541,6 +569,7 @@
         };        const del = document.createElement("button");
         del.className = "del";
         del.title = "Delete";
+        del.setAttribute("aria-label", "Delete rule");
         del.textContent = "✕";
         del.onclick = async () => {
           if (await inv("delete_rule", { id: r.id })) loadRules();

@@ -9,6 +9,8 @@
   --panel: #ffffff;
   --ink: #16181d;
   --dim: #6b7280;
+  --hint: #5d6b7c;
+  --del: #79808c;
   --line: #eceef2;
   --dark: #1c1c1e;
   --dark-2: #2a2a2e;
@@ -29,15 +31,52 @@
   display: none !important;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* keyboard focus ring — mouse focus stays clean */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* ---- dark mode ---- */
 body.dark {
   --bg: #0e0f11;
   --panel: #1a1b1e;
   --ink: #f2f3f5;
   --dim: #9aa0a8;
+  --hint: #9aa0a8;
+  --del: #c3c7ce;
   --line: #2a2b2f;
   --dark: #101013;
   --dark-2: #26282c;
+  --blue: #21304b;
+  --blue-ink: #a3c6f2;
+  --lav: #2d2547;
+  --lav-ink: #c6b4ef;
+  --mint: #1d3a29;
+  --mint-ink: #96d6aa;
+  --cream: #3d3419;
+  --cream-ink: #e3cf8f;
 }
 
 body.dark button.primary,
@@ -189,37 +228,6 @@ section {
   min-height: 0;
 }
 
-/* ---- stat cards ---- */
-#cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.card {
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.card b {
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.card span {
-  font-size: 12.5px;
-}
-
-.card.blue { background: var(--blue); color: var(--blue-ink); }
-.card.lav { background: var(--lav); color: var(--lav-ink); }
-.card.mint { background: var(--mint); color: var(--mint-ink); }
-.card.cream { background: var(--cream); color: var(--cream-ink); }
-
 /* ---- toolbar ---- */
 #toolbar {
   display: flex;
@@ -235,30 +243,14 @@ section {
   padding: 10px 15px;
   color: var(--ink);
   font-size: 13.5px;
-  outline: none;
 }
 
 #search:focus {
   border-color: var(--accent);
 }
 
-#refresh {
-  width: 42px;
-  border: 1.5px solid var(--line);
-  border-radius: 13px;
-  background: var(--panel);
-  color: var(--dim);
-  font-size: 15px;
-  cursor: pointer;
-}
-
-#refresh:hover {
-  color: var(--ink);
-  border-color: #d8dbe2;
-}
-
 /* ---- history ---- */
-main#list {
+#list {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
@@ -330,7 +322,7 @@ h2 {
 
 .dur {
   font-size: 11px;
-  color: #a5aab3;
+  color: var(--hint);
 }
 
 .text {
@@ -338,12 +330,17 @@ h2 {
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;
+  /* long dictations clamp; click to copy the full text */
+  display: -webkit-box;
+  -webkit-line-clamp: 10;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .del {
   background: none;
   border: none;
-  color: #c3c7ce;
+  color: var(--del);
   font-size: 13px;
   cursor: pointer;
   padding: 2px 4px;
@@ -351,6 +348,12 @@ h2 {
 
 .del:hover {
   color: var(--danger);
+}
+
+.del.confirm {
+  color: var(--danger);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 /* ---- empty state: dark card ---- */
@@ -440,7 +443,6 @@ input[type="password"],
   padding: 9px 13px;
   color: var(--ink);
   font-size: 13.5px;
-  outline: none;
   font-family: inherit;
 }
 
@@ -552,7 +554,21 @@ input:focus {
 .hint {
   margin-top: 5px;
   font-size: 11.5px;
-  color: #9aa0a8;
+  color: var(--hint);
+}
+
+/* settings group label */
+.group {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 22px 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1.5px solid var(--line);
+}
+
+.group:first-child {
+  margin-top: 0;
 }
 
 #cfgMsg {

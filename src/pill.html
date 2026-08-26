@@ -49,6 +49,9 @@
         50% { height: 18px; opacity: 1; }
       }
       #pill:not(.active) span { opacity: 0.75; }
+      @media (prefers-reduced-motion: reduce) {
+        .bar { animation: none !important; }
+      }
     </style>
   </head>
   <body>
