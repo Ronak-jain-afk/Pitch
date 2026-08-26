@@ -15,15 +15,16 @@
   --dark: #1c1c1e;
   --dark-2: #2a2a2e;
   --blue: #d9e7f8;
-  --blue-ink: #3d6db4;
+  --blue-ink: #315c9c;
   --lav: #e6ddf4;
   --lav-ink: #6b4fa8;
   --mint: #d9f0dc;
-  --mint-ink: #2e7d46;
+  --mint-ink: #256a3a;
   --cream: #f5eeda;
-  --cream-ink: #96803a;
+  --cream-ink: #7a6726;
   --accent: #a9c9f5;
-  --danger: #e5484d;
+  --focus-ring: #3d6db4;
+  --danger: #d13438;
   --radius: 18px;
 }
 
@@ -45,7 +46,7 @@
 
 /* keyboard focus ring — mouse focus stays clean */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -77,6 +78,8 @@ body.dark {
   --mint-ink: #96d6aa;
   --cream: #3d3419;
   --cream-ink: #e3cf8f;
+  --focus-ring: #a9c9f5;
+  --danger: #f0666a;
 }
 
 body.dark button.primary,
@@ -354,6 +357,9 @@ h2 {
   color: var(--danger);
   font-weight: 600;
   white-space: nowrap;
+  /* ✕ → "Delete?" swaps without shifting the row grid */
+  min-width: 52px;
+  text-align: right;
 }
 
 /* ---- empty state: dark card ---- */
@@ -531,6 +537,7 @@ input:focus {
 }
 
 .field label,
+.field .field-label,
 .check {
   display: block;
   font-size: 13px;
@@ -578,6 +585,10 @@ input:focus {
 }
 
 #cfgMsg.err {
+  color: var(--danger);
+}
+
+#ruleMsg.err {
   color: var(--danger);
 }
 

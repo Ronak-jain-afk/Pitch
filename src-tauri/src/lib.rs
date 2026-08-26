@@ -346,6 +346,12 @@ const MODEL_FILES: [&str; 4] =
     ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"];
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn cancel_downloads() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
 
 #[tauri::command]
 fn model_status(app: AppHandle) -> bool {
@@ -358,6 +364,7 @@ async fn download_model(app: AppHandle) -> Result<(), String> {
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("download already in progress".into());
     }
+    CANCEL.store(false, Ordering::Relaxed);
     let result = async {
         let dir = app
             .path()
@@ -389,29 +396,41 @@ async fn download_file(
     if dest.exists() {
         return Ok(()); // resume-by-skip: finished files aren't re-fetched
     }
-    let resp = reqwest::get(format!("{base}{name}"))
-        .await
-        .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("{name}: {}", resp.status()));
-    }
-    let total = resp.content_length().unwrap_or(0);
-    let mut resp = resp;
-    let mut file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
-    let mut done = 0u64;
-    let mut last_pct = 255u8;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
-        done += chunk.len() as u64;
-        if total > 0 {
-            let pct = ((done * 100) / total) as u8;
-            if pct != last_pct {
-                last_pct = pct;
-                let _ = app.emit(event, serde_json::json!({ "file": name, "percent": pct }));
+    // Any failure (including cancel) removes the partial file so a retry
+    // doesn't skip a broken "existing" download.
+    let result = async {
+        let resp = reqwest::get(format!("{base}{name}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("{name}: {}", resp.status()));
+        }
+        let total = resp.content_length().unwrap_or(0);
+        let mut resp = resp;
+        let mut file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+        let mut done = 0u64;
+        let mut last_pct = 255u8;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+            if CANCEL.load(Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            file.write_all(&chunk).map_err(|e| e.to_string())?;
+            done += chunk.len() as u64;
+            if total > 0 {
+                let pct = ((done * 100) / total) as u8;
+                if pct != last_pct {
+                    last_pct = pct;
+                    let _ = app.emit(event, serde_json::json!({ "file": name, "percent": pct }));
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(&dest);
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +831,8 @@ pub fn run() {
             model_status,
             download_model,
             polish_status,
-            download_polish_model
+            download_polish_model,
+            cancel_downloads
         ])
         .on_window_event(|window, event| {
             // Hub close hides to tray instead of quitting.
@@ -1181,6 +1201,7 @@ async fn download_polish_model(app: AppHandle) -> Result<(), String> {
     if POLISHING.swap(true, Ordering::SeqCst) {
         return Err("download already in progress".into());
     }
+    CANCEL.store(false, Ordering::Relaxed);
     let result = async {
         let dir = app
             .path()

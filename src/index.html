@@ -32,7 +32,7 @@
 
     <main id="pane">
       <header>
-        <h1 id="viewTitle">History</h1>
+        <h1 id="viewTitle" tabindex="-1">History</h1>
         <span id="stats"></span>
       </header>
 
@@ -49,7 +49,7 @@
 
       <section id="dict" class="hidden">
         <div class="view-head">
-          <p class="sub">Word corrections and snippets apply to every dictation.</p>
+          <p class="sub" id="dictSub">Word corrections apply to every dictation — teach PITCH your vocabulary.</p>
           <button id="addRule">+ Add rule</button>
         </div>
         <div id="ruleForm" class="hidden">
@@ -57,8 +57,9 @@
             <option value="word">Word correction</option>
             <option value="snippet">Snippet</option>
           </select>
-          <input id="ruleFrom" placeholder='Heard / said… e.g. "my linkedin"' />
-          <input id="ruleTo" placeholder="Written as… e.g. https://linkedin.com/in/you" />
+          <input id="ruleFrom" placeholder='Heard / said… e.g. "my linkedin"' aria-label="Heard or said" />
+          <input id="ruleTo" placeholder="Written as… e.g. https://linkedin.com/in/you" aria-label="Written as" />
+          <p id="ruleMsg" class="hint" aria-live="polite"></p>
           <div class="form-actions">
             <button id="ruleSave" class="primary">Save rule</button>
             <button id="ruleCancel" class="ghost">Cancel</button>
@@ -76,11 +77,11 @@
             <option value="local">Local only (offline)</option>
             <option value="cloud">Cloud only (Groq)</option>
           </select>
-          <p class="hint">Local runs on this PC via ONNX; cloud sends audio to Groq.</p>
+          <p class="hint" id="engineHint">Local runs on this PC via ONNX; cloud sends audio to Groq.</p>
         </div>
         <div class="field">
-          <label>Local engine</label>
-          <div id="modelCard">
+          <p class="field-label" id="localEngineLabel">Local engine</p>
+          <div id="modelCard" role="group" aria-labelledby="localEngineLabel">
             <div>
               <b id="modelState">Checking…</b>
               <p class="hint" id="modelHint">
@@ -89,7 +90,7 @@
             </div>
             <button id="dlModel" class="primary">Download (~660 MB)</button>
           </div>
-          <div id="dlBar" class="hidden">
+          <div id="dlBar" class="hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Local engine download progress">
             <div id="dlFill"></div>
           </div>
           <p class="hint" id="dlFile"></p>
@@ -108,7 +109,7 @@
             </div>
             <button id="dlPolish" class="primary">Download (~490 MB)</button>
           </div>
-          <div id="polishBar" class="hidden">
+          <div id="polishBar" class="hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="AI polish download progress">
             <div id="polishFill"></div>
           </div>
           <p class="hint" id="polishDlFile"></p>
@@ -131,7 +132,7 @@
             <option value="caps">Caps Lock</option>
             <option value="f9">F9</option>
           </select>
-          <p class="hint">Applies immediately after saving. Caps Lock is reserved for dictation while selected.</p>
+          <p class="hint">Takes effect when you save. Caps Lock is reserved for dictation while selected.</p>
         </div>
         <div class="field">
           <label for="modeOpt">Activation</label>
@@ -161,7 +162,7 @@
     <script>
       // ponytail: headless diagnostics — failures surface via debug_ping in stdout
       window.onerror = (m, s, l) => {
-        inv?.("debug_ping", { msg: `ERR ${l}: ${m}` }).catch(() => {});
+        window.__TAURI__?.core?.invoke("debug_ping", { msg: `ERR ${l}: ${m}` }).catch(() => {});
       };
       const inv = window.__TAURI__?.core?.invoke;
       if (!inv) document.title = "NO TAURI API";
@@ -198,6 +199,7 @@
         const q = $("search").value.trim().toLowerCase();
         const filtered = q ? all.filter((e) => e.text.toLowerCase().includes(q)) : all;
         const list = $("list");
+        const scrollPos = list.scrollTop; // rebuild in place without yanking scroll
         list.innerHTML = "";
         const empty = $("empty");
         if (filtered.length) {
@@ -226,6 +228,7 @@
           }
           list.appendChild(row(e));
         }
+        list.scrollTop = scrollPos;
       }
 
       function row(e) {
@@ -290,6 +293,12 @@
           if (ev.key === "Enter" || ev.key === " ") {
             ev.preventDefault();
             copy();
+          } else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+            ev.preventDefault();
+            const rows = [...document.querySelectorAll("#list .row")];
+            const next = rows[rows.indexOf(div) + (ev.key === "ArrowDown" ? 1 : -1)];
+            if (next) next.focus();
+            else if (ev.key === "ArrowUp") $("search").focus();
           }
         };
         return div;
@@ -299,6 +308,15 @@
       document.getElementById("search").addEventListener("input", () => {
         clearTimeout(searchTimer);
         searchTimer = setTimeout(render, 150);
+      });
+      document.getElementById("search").addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+          const first = document.querySelector("#list .row");
+          if (first) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       });
       listen("dictation", refresh);
       refresh();
@@ -332,7 +350,10 @@
       async function initTheme() {
         try {
           applyTheme((await inv("get_config")).theme);
-        } catch {}
+        } catch {
+          // no stored theme — follow the OS
+          applyTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        }
       }
 
       $("themeBtn").onclick = async () => {
@@ -351,12 +372,18 @@
         }
         for (const b of document.querySelectorAll("#rail button[data-view]")) {
           b.classList.toggle("on", b.dataset.view === name);
+          b.setAttribute("aria-current", b.dataset.view === name ? "page" : "false");
         }
         $("viewTitle").textContent = TITLES[name];
+        $("viewTitle").focus({ preventScroll: true });
         if (name === "settings") loadSettings();
         if (name === "dict" || name === "snippets") {
           ruleKind = name === "snippets" ? "snippet" : "word";
           $("addRule").textContent = ruleKind === "snippet" ? "+ Add snippet" : "+ Add word";
+          $("dictSub").textContent =
+            ruleKind === "snippet"
+              ? 'Snippets expand spoken cues into full text — say "my linkedin", get your URL.'
+              : "Word corrections apply to every dictation — teach PITCH your vocabulary.";
           loadRules();
         }
       }
@@ -375,6 +402,9 @@
           if (opt.selected && !installed) opt.selected = false;
         }
         if (!installed && !$("engineOpt").value) $("engineOpt").value = "cloud";
+        $("engineHint").textContent = installed
+          ? "Local runs on this PC via ONNX; cloud sends audio to Groq."
+          : "Local runs on this PC via ONNX; cloud sends audio to Groq. Install the local model below to enable Auto and Local.";
       }
 
       function setModelUI(installed) {
@@ -392,6 +422,16 @@
         }
       }
 
+      // Friendly download-failure text; raw detail kept in the title attribute.
+      function dlFailure(stateEl, fileEl, e) {
+        stateEl.textContent = "Download failed";
+        const cancelled = String(e).includes("cancelled");
+        fileEl.textContent = cancelled
+          ? "Download cancelled — nothing was kept."
+          : "Download failed — check your connection and try again.";
+        fileEl.title = cancelled ? "" : String(e);
+      }
+
       let dlStarted = false;
       listen("model-dl", (e) => {
         const p = e.payload;
@@ -402,6 +442,7 @@
         }
         $("dlBar").classList.remove("hidden");
         $("dlFill").style.width = `${p.percent}%`;
+        $("dlBar").setAttribute("aria-valuenow", p.percent);
         $("dlFile").textContent = `${p.file} — ${p.percent}%`;
       }).catch(() => {});
 
@@ -425,19 +466,22 @@
       }
 
       $("dlModel").onclick = async () => {
-        if (dlStarted) return;
+        if (dlStarted) {
+          // second click while running = cancel
+          await inv("cancel_downloads").catch(() => {});
+          $("dlModel").textContent = "Cancelling…";
+          return;
+        }
         dlStarted = true;
-        $("dlModel").disabled = true;
-        $("dlModel").textContent = "Downloading…";
+        $("dlModel").textContent = "Cancel";
         $("dlBar").classList.remove("hidden");
         try {
           await inv("download_model");
           setModelUI(true);
         } catch (e) {
-          $("modelState").textContent = "Download failed";
-          $("dlFile").textContent = String(e);
+          dlFailure($("modelState"), $("dlFile"), e);
+          $("dlBar").classList.add("hidden");
         }
-        $("dlModel").disabled = false;
         $("dlModel").textContent = "Download (~660 MB)";
         dlStarted = false;
       };
@@ -456,9 +500,14 @@
           cfg.mode = $("modeOpt").value;
           cfg.polish = $("polish").checked;
           await inv("save_config", { config: cfg });
-          $("cfgMsg").textContent = "Saved ✓";
           $("cfgMsg").classList.remove("err");
-          setTimeout(() => ($("cfgMsg").textContent = ""), 2000);
+          if (cfg.engine === "cloud" && !cfg.groqKey) {
+            $("cfgMsg").textContent = "Saved — but Cloud-only needs a Groq API key to work.";
+            $("cfgMsg").classList.add("err");
+          } else {
+            $("cfgMsg").textContent = "Saved ✓";
+            setTimeout(() => ($("cfgMsg").textContent = ""), 2000);
+          }
         } catch (e) {
           $("cfgMsg").textContent = `Save failed: ${e}`;
           $("cfgMsg").classList.add("err");
@@ -490,23 +539,26 @@
         }
         $("polishBar").classList.remove("hidden");
         $("polishFill").style.width = `${p.percent}%`;
+        $("polishBar").setAttribute("aria-valuenow", p.percent);
         $("polishDlFile").textContent = `${p.file} — ${p.percent}%`;
       }).catch(() => {});
 
       $("dlPolish").onclick = async () => {
-        if (polishDlStarted) return;
+        if (polishDlStarted) {
+          await inv("cancel_downloads").catch(() => {});
+          $("dlPolish").textContent = "Cancelling…";
+          return;
+        }
         polishDlStarted = true;
-        $("dlPolish").disabled = true;
-        $("dlPolish").textContent = "Downloading…";
+        $("dlPolish").textContent = "Cancel";
         $("polishBar").classList.remove("hidden");
         try {
           await inv("download_polish_model");
           setPolishUI(true);
         } catch (e) {
-          $("polishState").textContent = "Download failed";
-          $("polishDlFile").textContent = String(e);
+          dlFailure($("polishState"), $("polishDlFile"), e);
+          $("polishBar").classList.add("hidden");
         }
-        $("dlPolish").disabled = false;
         $("dlPolish").textContent = "Download (~490 MB)";
         polishDlStarted = false;
       };
@@ -564,6 +616,7 @@
           $("ruleKind").value = r.kind;
           $("ruleFrom").value = r.from;
           $("ruleTo").value = r.to;
+          $("ruleMsg").textContent = "";
           $("ruleForm").classList.remove("hidden");
           $("ruleFrom").focus();
         };        const del = document.createElement("button");
@@ -580,21 +633,31 @@
         return div;
       }
 
-      $("addRule").onclick = () => {
+      function openRuleForm() {
         editingRuleId = 0;
         $("ruleKind").value = ruleKind;
         $("ruleFrom").value = "";
         $("ruleTo").value = "";
+        $("ruleMsg").textContent = "";
         $("ruleForm").classList.remove("hidden");
         $("ruleFrom").focus();
-      };
+      }
+
+      $("addRule").onclick = openRuleForm;
 
       $("ruleCancel").onclick = () => $("ruleForm").classList.add("hidden");
 
       $("ruleSave").onclick = async () => {
         const from = $("ruleFrom").value.trim();
-        const to = $("ruleTo").value;
-        if (!from || !to) return;
+        const to = $("ruleTo").value.trim();
+        const msg = $("ruleMsg");
+        msg.classList.remove("err");
+        if (!from || !to) {
+          msg.textContent = "Fill in both sides — what you say, and what it becomes.";
+          msg.classList.add("err");
+          ($(from ? "ruleTo" : "ruleFrom")).focus();
+          return;
+        }
         try {
           await inv("save_rule", {
             rule: {
@@ -608,7 +671,8 @@
           $("ruleForm").classList.add("hidden");
           loadRules();
         } catch (e) {
-          $("ruleTo").placeholder = `Save failed: ${e}`;
+          msg.textContent = `Save failed: ${e}`;
+          msg.classList.add("err");
         }
       };
     </script>
