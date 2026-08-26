@@ -200,6 +200,7 @@
         const filtered = q ? all.filter((e) => e.text.toLowerCase().includes(q)) : all;
         const list = $("list");
         const scrollPos = list.scrollTop; // rebuild in place without yanking scroll
+        const focusTs = document.activeElement?.dataset?.ts; // keep keyboard focus aboard
         list.innerHTML = "";
         const empty = $("empty");
         if (filtered.length) {
@@ -229,12 +230,40 @@
           list.appendChild(row(e));
         }
         list.scrollTop = scrollPos;
+        if (focusTs) list.querySelector(`[data-ts="${focusTs}"]`)?.focus();
+      }
+
+      // Two-state inline delete: first click arms, second click within 3s fires.
+      function armDelete(btn, onConfirm) {
+        if (btn.dataset.armed) {
+          delete btn.dataset.armed;
+          onConfirm();
+          return;
+        }
+        btn.dataset.armed = "1";
+        btn.dataset.label = btn.textContent;
+        btn.dataset.ariabase = btn.getAttribute("aria-label") || "Delete";
+        btn.classList.add("confirm");
+        btn.textContent = "Delete?";
+        btn.setAttribute("aria-label", "Confirm delete");
+        setTimeout(() => {
+          if (!btn.isConnected || !btn.dataset.armed) return;
+          disarmDelete(btn);
+        }, 3000);
+      }
+
+      function disarmDelete(btn) {
+        delete btn.dataset.armed;
+        btn.classList.remove("confirm");
+        btn.textContent = btn.dataset.label;
+        btn.setAttribute("aria-label", btn.dataset.ariabase);
       }
 
       function row(e) {
         const div = document.createElement("div");
         div.className = "row";
         div.tabIndex = 0;
+        div.dataset.ts = e.ts;
         div.setAttribute("role", "button");
         div.setAttribute("aria-label", `Copy dictation: ${e.text.slice(0, 80)}`);
 
@@ -253,27 +282,14 @@
         del.title = "Delete";
         del.setAttribute("aria-label", "Delete dictation");
         del.textContent = "✕";
-        // Two-state confirm: first click arms, second click within 3s deletes.
         del.onclick = async (ev) => {
           ev.stopPropagation();
-          if (!del.dataset.armed) {
-            del.dataset.armed = "1";
-            del.classList.add("confirm");
-            del.textContent = "Delete?";
-            del.setAttribute("aria-label", "Confirm delete");
-            setTimeout(() => {
-              if (!del.isConnected || !del.dataset.armed) return;
-              delete del.dataset.armed;
-              del.classList.remove("confirm");
-              del.textContent = "✕";
-              del.setAttribute("aria-label", "Delete dictation");
-            }, 3000);
-            return;
-          }
-          if (await inv("delete_history", { ts: e.ts })) {
-            $("live").textContent = "Dictation deleted";
-            refresh();
-          }
+          armDelete(del, async () => {
+            if (await inv("delete_history", { ts: e.ts })) {
+              $("live").textContent = "Dictation deleted";
+              refresh();
+            }
+          });
         };
 
         const copy = async () => {
@@ -509,8 +525,10 @@
             setTimeout(() => ($("cfgMsg").textContent = ""), 2000);
           }
         } catch (e) {
-          $("cfgMsg").textContent = `Save failed: ${e}`;
+          inv("debug_ping", { msg: `config save failed: ${e}` }).catch(() => {});
+          $("cfgMsg").textContent = "Save failed — try again.";
           $("cfgMsg").classList.add("err");
+          $("cfgMsg").title = String(e);
         }
       };
 
@@ -565,6 +583,7 @@
 
       // ---- dictionary & snippets ----
       let editingRuleId = 0;
+      let editingEnabled = true;
 
       async function loadRules() {
         const rules = (await inv("list_rules")).filter((r) => r.kind === ruleKind);
@@ -600,6 +619,7 @@
         toggle.className = "ghost";
         toggle.title = r.enabled ? "Disable" : "Enable";
         toggle.setAttribute("aria-label", (r.enabled ? "Disable" : "Enable") + " rule");
+        toggle.setAttribute("aria-pressed", String(r.enabled));
         toggle.textContent = r.enabled ? "⏸" : "▶";
         toggle.onclick = async () => {
           await inv("save_rule", { rule: { ...r, enabled: !r.enabled } });
@@ -613,6 +633,7 @@
         edit.textContent = "✎";
         edit.onclick = () => {
           editingRuleId = r.id;
+          editingEnabled = r.enabled;
           $("ruleKind").value = r.kind;
           $("ruleFrom").value = r.from;
           $("ruleTo").value = r.to;
@@ -624,8 +645,13 @@
         del.title = "Delete";
         del.setAttribute("aria-label", "Delete rule");
         del.textContent = "✕";
-        del.onclick = async () => {
-          if (await inv("delete_rule", { id: r.id })) loadRules();
+        del.onclick = () => {
+          armDelete(del, async () => {
+            if (await inv("delete_rule", { id: r.id })) {
+              $("live").textContent = "Rule deleted";
+              loadRules();
+            }
+          });
         };
 
         actions.append(toggle, edit, del);
@@ -635,6 +661,7 @@
 
       function openRuleForm() {
         editingRuleId = 0;
+        editingEnabled = true;
         $("ruleKind").value = ruleKind;
         $("ruleFrom").value = "";
         $("ruleTo").value = "";
@@ -665,14 +692,17 @@
               kind: $("ruleKind").value,
               from,
               to,
-              enabled: true,
+              // editing must not silently re-enable a disabled rule
+              enabled: editingRuleId ? editingEnabled : true,
             },
           });
           $("ruleForm").classList.add("hidden");
           loadRules();
         } catch (e) {
-          msg.textContent = `Save failed: ${e}`;
+          inv("debug_ping", { msg: `rule save failed: ${e}` }).catch(() => {});
+          msg.textContent = "Save failed — try again.";
           msg.classList.add("err");
+          msg.title = String(e);
         }
       };
     </script>
