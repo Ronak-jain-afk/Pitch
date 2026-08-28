@@ -1,6 +1,6 @@
 [package]
 name = "pitch"
-version = "0.3.0"
+version = "0.3.1"
 description = "Push-to-talk dictation for Windows"
 authors = ["you"]
 edition = "2021"
