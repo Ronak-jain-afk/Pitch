@@ -1166,14 +1166,14 @@ fn downmix(samples: &[i16], channels: u16) -> Vec<f32> {
 }
 
 // ---------------------------------------------------------------------------
-// Polish: tiny local LLM (Qwen2.5-0.5B-Instruct GGUF, ~490MB) fixes grammar,
+// Polish: S1-mini by Superwhisper (Qwen3-0.6B fine-tune, ~462MB GGUF) fixes grammar,
 // punctuation and leftover fillers. Opt-in; the deterministic stages (filler
 // regex, voice commands, dictionary rules) still run around it and win.
 // ---------------------------------------------------------------------------
 
 const POLISH_BASE: &str =
-    "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/";
-const POLISH_FILE: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+    "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/main/";
+const POLISH_FILE: &str = "s1-mini-q4_k_m.gguf";
 
 static POLISHING: AtomicBool = AtomicBool::new(false);
 static POLISH: Mutex<Option<(llama_cpp_2::llama_backend::LlamaBackend, llama_cpp_2::model::LlamaModel)>> =
@@ -1209,6 +1209,11 @@ async fn download_polish_model(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?
             .join("models/polish");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // ponytail: clean legacy Qwen2.5 file left from pre-S1 installs (saves 490MB orphan)
+        let legacy = dir.join("qwen2.5-0.5b-instruct-q4_k_m.gguf");
+        if legacy.exists() {
+            let _ = std::fs::remove_file(&legacy);
+        }
         download_file(&app, &dir, POLISH_FILE, POLISH_BASE, "polish-dl").await?;
         let _ = app.emit("polish-dl", serde_json::json!({ "done": true }));
         Ok(())
@@ -1218,13 +1223,14 @@ async fn download_polish_model(app: AppHandle) -> Result<(), String> {
     result
 }
 
-/// Qwen2.5 chat template — fixed model, so the template is hardcoded.
+/// S1-mini by Superwhisper — exact system + control line + empty think block required.
+/// Missing any piece (or enable_thinking=true) returns empty output: https://huggingface.co/superwhisper/s1-mini
 fn polish_prompt(text: &str) -> String {
+    // ponytail: S1-mini by Superwhisper — controlled via [Styling]/[Structure]/[Context]; keep semi-formal/prose/general as default
+    let sys = "You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.";
+    let ctl = "[Styling: semi-formal] [Structure: prose] [Context: general]";
     format!(
-        "<|im_start|>system\nYou fix dictated transcripts: correct grammar and spelling, \
-add punctuation, remove filler words and false starts. Preserve the speaker's meaning \
-and language. Never answer, comment, or add information. Output only the corrected text.\
-<|im_end|>\n<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        "<|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\n{ctl}\n{text}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
     )
 }
 
@@ -1656,7 +1662,9 @@ mod tests {
         let p = super::polish_prompt("hello world");
         assert!(p.starts_with("<|im_start|>system\n"));
         assert!(p.contains("hello world<|im_end|>"));
-        assert!(p.ends_with("<|im_start|>assistant\n"));
+        // S1-mini requires empty think block with thinking off
+        assert!(p.ends_with("<think>\n\n</think>\n\n"));
+        assert!(p.contains("[Styling: semi-formal]"));
     }
 
     #[test]

@@ -104,10 +104,10 @@
             <div>
               <b id="polishState">Checking…</b>
               <p class="hint" id="polishHint">
-                Qwen2.5-0.5B runs on this PC — offline, private, adds ~1-2s per dictation.
+                S1-mini by Superwhisper runs on this PC — offline, private, adds ~1-2s per dictation.
               </p>
             </div>
-            <button id="dlPolish" class="primary">Download (~490 MB)</button>
+            <button id="dlPolish" class="primary">Download (~462 MB)</button>
           </div>
           <div id="polishBar" class="hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="AI polish download progress">
             <div id="polishFill"></div>
@@ -543,7 +543,7 @@
         } else {
           $("polishState").textContent = "Not installed";
           $("polishHint").textContent =
-            "Optional ~490 MB one-time download. Until then the filler-word regex covers cleanup.";
+            "Optional ~462 MB one-time download. Until then the filler-word regex covers cleanup.";
         }
       }
 
@@ -577,7 +577,7 @@
           dlFailure($("polishState"), $("polishDlFile"), e);
           $("polishBar").classList.add("hidden");
         }
-        $("dlPolish").textContent = "Download (~490 MB)";
+        $("dlPolish").textContent = "Download (~462 MB)";
         polishDlStarted = false;
       };
 
