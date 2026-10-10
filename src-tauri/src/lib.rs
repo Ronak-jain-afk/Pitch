@@ -294,14 +294,14 @@ enum Engine {
 impl Engine {
     fn name(self) -> &'static str {
         match self {
-            Engine::Local => "parakeet",
+            Engine::Local => "whistle",
             Engine::Cloud => "groq",
         }
     }
 }
 
 /// ponytail: PITCH_ENGINE=auto|local|cloud env for now; settings UI in Phase 2.
-/// auto = Parakeet first with Groq as fallback.
+/// auto = Whistle first with Groq as fallback.
 fn engines(setting: Option<&str>, model_present: bool) -> Vec<Engine> {
     match setting {
         Some("local") => vec![Engine::Local],
@@ -311,39 +311,48 @@ fn engines(setting: Option<&str>, model_present: bool) -> Vec<Engine> {
     }
 }
 
-fn model_dir() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8")
-}
+const WHISTLE_FILE: &str = "whistle.cact";
 
-/// Runtime resolution: bundled resources, then user-downloaded, then the dev
-/// checkout. ponytail: the old compile-time-only path broke in shipped builds.
-fn model_dir_for(app: &AppHandle) -> Option<std::path::PathBuf> {
+/// Runtime resolution: bundled resources, then user-downloaded. ponytail: the
+/// old compile-time-only path broke in shipped builds.
+fn whistle_path_for(app: &AppHandle) -> Option<std::path::PathBuf> {
     if let Ok(res) = app.path().resource_dir() {
-        let p = res.join("models/parakeet-v2");
-        if p.join("encoder.int8.onnx").exists() {
+        let p = res.join("models/whistle").join(WHISTLE_FILE);
+        if p.exists() {
             return Some(p);
         }
     }
     if let Ok(data) = app.path().app_data_dir() {
-        let p = data.join("models/parakeet-v2");
-        if p.join("encoder.int8.onnx").exists() {
+        let p = data.join("models/whistle").join(WHISTLE_FILE);
+        if p.exists() {
             return Some(p);
         }
     }
-    let dev = model_dir();
-    dev.join("encoder.int8.onnx").exists().then_some(dev)
+    None
+}
+
+/// First-run janitor: the Parakeet era stored ~660 MB of ONNX files across
+/// these dirs — dead weight once Whistle is in place.
+fn remove_legacy_parakeet(app: &AppHandle) {
+    let mut dirs = vec![];
+    if let Ok(res) = app.path().resource_dir() {
+        dirs.push(res.join("models/parakeet-v2"));
+    }
+    if let Ok(data) = app.path().app_data_dir() {
+        dirs.push(data.join("models/parakeet-v2"));
+    }
+    for d in dirs {
+        if d.exists() {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// One-click local engine download (Hugging Face, individual files — no archive
-// step). ponytail: swap HF_BASE for our GitHub release mirror before shipping.
+// One-click local engine download (Hugging Face, single 16.9 MB file).
 // ---------------------------------------------------------------------------
 
-const HF_BASE: &str =
-    "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/";
-const MODEL_FILES: [&str; 4] =
-    ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"];
+const WHISTLE_BASE: &str = "https://huggingface.co/Cactus-Compute/whistle/resolve/main/";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
@@ -355,7 +364,7 @@ fn cancel_downloads() {
 
 #[tauri::command]
 fn model_status(app: AppHandle) -> bool {
-    model_dir_for(&app).is_some()
+    whistle_path_for(&app).is_some()
 }
 
 #[tauri::command]
@@ -370,11 +379,10 @@ async fn download_model(app: AppHandle) -> Result<(), String> {
             .path()
             .app_data_dir()
             .map_err(|e| e.to_string())?
-            .join("models/parakeet-v2");
+            .join("models/whistle");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        for file in MODEL_FILES {
-            download_file(&app, &dir, file, HF_BASE, "model-dl").await?;
-        }
+        download_file(&app, &dir, WHISTLE_FILE, WHISTLE_BASE, "model-dl").await?;
+        remove_legacy_parakeet(&app);
         let _ = app.emit("model-dl", serde_json::json!({ "done": true }));
         Ok(())
     }
@@ -929,21 +937,21 @@ fn stop_recording(app: &AppHandle) {
 
         let config = load_config(&app);
         let rules = load_rules(&app);
-        let list = engines(Some(config.engine.as_str()), model_dir_for(&app).is_some());
+        let list = engines(Some(config.engine.as_str()), whistle_path_for(&app).is_some());
         let mut last_err = None;
         for engine in list {
             println!("[pitch] engine: {engine:?}");
             let result = match engine {
-                Engine::Local => match model_dir_for(&app) {
-                    Some(dir) => {
+                Engine::Local => match (whistle_path_for(&app), needle_path_for(&app)) {
+                    (Some(model), Some(engine)) => {
                         let capture = capture.clone();
                         tauri::async_runtime::spawn_blocking(move || {
-                            transcribe_local(&capture, dir)
+                            transcribe_local(&capture, model, engine)
                         })
                         .await
                         .unwrap_or_else(|e| Err(e.to_string()))
                     }
-                    None => Err("local engine not installed (Settings → Local engine)".into()),
+                    _ => Err("local engine not installed (Settings → Local engine)".into()),
                 },
                 Engine::Cloud => {
                     transcribe_cloud(
@@ -1118,43 +1126,98 @@ fn encode_wav(samples: &[i16], rate: u32, channels: u16) -> Vec<u8> {
 
 type Err = Box<dyn std::error::Error + Send + Sync>;
 
-static RECOGNIZER: Mutex<Option<sherpa_onnx::OfflineRecognizer>> = Mutex::new(None);
+// ---------------------------------------------------------------------------
+// Whistle (Cactus Compute, Apache-2.0): 16.9 MB local STT via the Needle
+// engine CLI (resources/needle.exe, bundled). ponytail: sidecar, not FFI —
+// the prebuilt libneedle.a ships foreign objects MSVC rejects (LNK1143).
+// Measured overhead is ~0.4 s per dictation (spawn + 17 MB load + decode);
+// revisit in-process FFI (engine is MSVC-compatible from source) only if that
+// ever matters next to multi-second recordings.
+// ---------------------------------------------------------------------------
 
-/// Parakeet-tdt-0.6b-v2 via sherpa-onnx, CPU. ponytail: model load (~1s) happens
-/// once on first dictation; move to startup if first-use latency ever annoys.
-fn transcribe_local(capture: &Capture, dir: std::path::PathBuf) -> Result<String, String> {
-    let mut guard = RECOGNIZER.lock().unwrap();
-    let recognizer = match &*guard {
-        Some(r) => r,
-        None => {
-            println!("[pitch] loading parakeet…");
-            let config = sherpa_onnx::OfflineRecognizerConfig {
-                model_config: sherpa_onnx::OfflineModelConfig {
-                    transducer: sherpa_onnx::OfflineTransducerModelConfig {
-                        encoder: Some(dir.join("encoder.int8.onnx").to_string_lossy().into()),
-                        decoder: Some(dir.join("decoder.int8.onnx").to_string_lossy().into()),
-                        joiner: Some(dir.join("joiner.int8.onnx").to_string_lossy().into()),
-                    },
-                    tokens: Some(dir.join("tokens.txt").to_string_lossy().into()),
-                    num_threads: 2,
-                    provider: Some("cpu".into()),
-                    model_type: Some("nemo_transducer".into()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            let r = sherpa_onnx::OfflineRecognizer::create(&config)
-                .ok_or("failed to create parakeet recognizer")?;
-            *guard = Some(r);
-            guard.as_ref().unwrap()
+/// Runtime resolution for the bundled engine binary: installed resources,
+/// then the dev checkout.
+fn needle_path_for(app: &AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("resources/needle.exe");
+        if p.exists() {
+            return Some(p);
         }
-    };
-    // sherpa wants mono; it resamples internally.
-    let mono = downmix(&capture.samples, capture.channels);
-    let stream = recognizer.create_stream();
-    stream.accept_waveform(capture.rate as i32, &mono);
-    recognizer.decode(&stream);
-    stream.get_result().map(|r| r.text).ok_or("parakeet returned no result".into())
+    }
+    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/needle.exe");
+    dev.exists().then_some(dev)
+}
+
+/// Whistle via one engine-CLI call: 16 kHz mono WAV in, transcript JSON out.
+/// Silence yields empty text (the caller's "Nothing heard" path).
+fn transcribe_local(
+    capture: &Capture,
+    model: std::path::PathBuf,
+    engine: std::path::PathBuf,
+) -> Result<String, String> {
+    let mono = to_16k_mono(&capture.samples, capture.rate, capture.channels);
+    if mono.is_empty() {
+        return Err("no audio captured".into());
+    }
+    let pcm16: Vec<i16> =
+        mono.iter().map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+    let wav = encode_wav(&pcm16, 16000, 1);
+    let dir = std::env::temp_dir().join("pitch-stt");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let clip = dir.join(format!("clip-{}.wav", now_ms()));
+    std::fs::write(&clip, &wav).map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(&engine)
+        .arg("--model")
+        .arg(&model)
+        .arg("--audio")
+        .arg(&clip)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&clip);
+    if !out.status.success() {
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("whistle exited {}", out.status)
+        } else {
+            detail.chars().take(200).collect()
+        });
+    }
+    // ponytail: last JSON line wins — future engine chatter on stdout can't break us.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .rev()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .find_map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()?
+                .get("text")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .ok_or_else(|| "whistle returned no transcript".into())
+}
+
+/// 16 kHz mono float PCM for Whistle: downmix, then linear-resample from the
+/// mic rate. ponytail: linear interp, not sinc — dictation doesn't need studio quality.
+fn to_16k_mono(samples: &[i16], rate: u32, channels: u16) -> Vec<f32> {
+    let mono = downmix(samples, channels);
+    if rate == 16000 {
+        return mono;
+    }
+    let ratio = rate as f64 / 16000.0;
+    let n = (mono.len() as f64 / ratio) as usize;
+    (0..n)
+        .map(|i| {
+            let pos = i as f64 * ratio;
+            let j = pos as usize;
+            let frac = (pos - j as f64) as f32;
+            let a = mono[j];
+            let b = mono.get(j + 1).copied().unwrap_or(a);
+            a + (b - a) * frac
+        })
+        .collect()
 }
 
 fn downmix(samples: &[i16], channels: u16) -> Vec<f32> {
@@ -1521,21 +1584,41 @@ mod tests {
         assert_eq!(&wav[48..50], &(-100i16).to_le_bytes());
     }
 
-    // Integration: loads the real model. Skips cleanly if you deleted models/.
+    // Integration: runs the real engine sidecar. Skips cleanly when the model
+    // isn't downloaded — and needs no audio fixture, since silence must by
+    // contract return empty text rather than a hallucination.
     #[test]
-    fn parakeet_transcribes_sample_wav() {
-        let dir = super::model_dir();
-        if !dir.join("encoder.int8.onnx").exists() {
+    fn whistle_transcribes_silence_as_empty() {
+        let engine = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/needle.exe");
+        let model = std::env::var("APPDATA")
+            .map(|a| {
+                std::path::PathBuf::from(a)
+                    .join("com.ronak.pitch/models/whistle")
+                    .join(super::WHISTLE_FILE)
+            })
+            .unwrap_or_default();
+        if !engine.exists() || !model.exists() {
             return;
         }
-        let wav_path = dir.join("test_wavs/0.wav");
-        let wave = sherpa_onnx::Wave::read(wav_path.to_str().unwrap()).unwrap();
-        let samples: Vec<i16> =
-            wave.samples().iter().map(|s| (*s * 32767.0) as i16).collect();
-        let cap = Capture { samples, rate: wave.sample_rate() as u32, channels: 1 };
-        let text = super::transcribe_local(&cap, dir).unwrap();
-        println!("parakeet says: {text}");
-        assert!(!text.trim().is_empty(), "expected actual words from sample audio");
+        for rate in [16000, 44100, 48000] {
+            let cap =
+                Capture { samples: vec![0i16; rate as usize], rate, channels: 1 };
+            let text = super::transcribe_local(&cap, model.clone(), engine.clone()).unwrap();
+            assert!(text.trim().is_empty(), "silence must not hallucinate: {text}");
+        }
+    }
+
+    #[test]
+    fn resample_targets_16k() {
+        // passthrough at native rate
+        let mono = super::to_16k_mono(&[1000, -1000], 16000, 1);
+        assert_eq!(mono.len(), 2);
+        // 48 kHz stereo second → 16000 mono frames
+        let stereo = vec![0i16; 48000 * 2];
+        assert_eq!(super::to_16k_mono(&stereo, 48000, 2).len(), 16000);
+        // empty in → empty out (caller reports "no audio captured")
+        assert!(super::to_16k_mono(&[], 44100, 1).is_empty());
     }
 
     fn rule(id: u64, kind: &str, from: &str, to: &str, enabled: bool) -> super::Rule {

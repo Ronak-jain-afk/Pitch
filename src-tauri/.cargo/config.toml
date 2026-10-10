@@ -1,5 +1,5 @@
-# llama.cpp must use the static CRT (/MT) to match sherpa-onnx's prebuilt
-# static libs — mixing /MT and /MD CRTs fails to link (LNK2038/LNK1169).
+# llama.cpp must use the static CRT (/MT) so every native dep links against
+# the same runtime — mixing /MT and /MD CRTs fails to link (LNK2038/LNK1169).
 # LLAMA_STATIC_CRT alone isn't enough: CMake policy CMP0091 strips CRT flags
 # from CMAKE_<LANG>_FLAGS, so the runtime library must be set explicitly.
 [env]

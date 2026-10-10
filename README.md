@@ -23,7 +23,7 @@ PITCH works in **every app** — Slack, Notion, your browser, your IDE. Hold the
 
 - **Push-to-talk everywhere** — global hotkey works over any app, implemented with a low-level keyboard hook that never swallows your keys or triggers the Start menu. Pick **Ctrl+Win**, **Caps Lock**, or **F9**, with hold-to-talk or toggle activation
 - **Two transcription engines**
-  - **Local (Parakeet)** — NVIDIA's Parakeet TDT runs on-device via ONNX. Offline, private, no per-use cost, one-click download from Settings
+  - **Local (Whistle)** — Cactus Compute's Whistle runs on-device via its native engine. Offline, private, no per-use cost, one-click ~17 MB download from Settings
   - **Cloud (Groq)** — Whisper large-v3 turbo, extremely fast, used automatically as fallback whenever local fails
 - **Local AI polish (opt-in)** — S1-mini by Superwhisper (~462 MB one-time download) fixes grammar, punctuation, and leftover fillers before your dictionary rules apply. Fully offline
 - **Voice commands** — say "scratch that" to undo the last dictation; "new line" / "new paragraph" for layout while dictating
@@ -44,10 +44,10 @@ PITCH works in **every app** — Slack, Notion, your browser, your IDE. Hold the
 1. Grab **`PITCH_x.y.z_x64-setup.exe`** from the [latest release](https://github.com/Ronak-jain-afk/Pitch/releases/latest)
 2. Install (per-user, no admin required)
 3. Optional: paste a [Groq API key](https://console.groq.com/keys) in Settings → cloud engine + fallback
-4. Optional: hit **Download** under Local engine (~660 MB, one time) for offline dictation
+4. Optional: hit **Download** under Local engine (~17 MB, one time) for offline dictation
 5. Optional: enable **AI polish** and download S1-mini by Superwhisper (~462 MB, one time)
 
-> The installer is ~9 MB because the speech models are downloaded on demand instead of shipped inside it.
+> The installer stays small (~10 MB) because the speech model downloads on demand instead of shipping inside it.
 
 ## Privacy
 
@@ -72,7 +72,7 @@ The local speech model isn't stored in git — download it from Settings on firs
 
 ## Tech stack
 
-Rust · [Tauri 2](https://tauri.app) · sherpa-onnx (Parakeet TDT) · llama.cpp (S1-mini by Superwhisper) · cpal · whisper via [Groq](https://groq.com) · vanilla JS webview UI
+Rust · [Tauri 2](https://tauri.app) · [Whistle](https://huggingface.co/Cactus-Compute/whistle) via the Cactus Needle engine · llama.cpp (S1-mini by Superwhisper) · cpal · whisper via [Groq](https://groq.com) · vanilla JS webview UI
 
 ## License
 

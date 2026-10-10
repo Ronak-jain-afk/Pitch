@@ -318,7 +318,7 @@ h2 {
   border-radius: 999px;
 }
 
-.badge.parakeet { background: var(--mint); color: var(--mint-ink); }
+.badge.parakeet, .badge.whistle { background: var(--mint); color: var(--mint-ink); }
 .badge.groq { background: var(--cream); color: var(--cream-ink); }
 .badge.word { background: var(--blue); color: var(--blue-ink); }
 .badge.snippet { background: var(--lav); color: var(--lav-ink); }

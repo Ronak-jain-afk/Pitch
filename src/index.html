@@ -73,11 +73,11 @@
         <div class="field">
           <label for="engineOpt">Transcription engine</label>
           <select id="engineOpt">
-            <option value="auto">Auto — local Parakeet, Groq fallback</option>
+            <option value="auto">Auto — local Whistle, Groq fallback</option>
             <option value="local">Local only (offline)</option>
             <option value="cloud">Cloud only (Groq)</option>
           </select>
-          <p class="hint" id="engineHint">Local runs on this PC via ONNX; cloud sends audio to Groq.</p>
+          <p class="hint" id="engineHint">Local runs on this PC via the Whistle engine; cloud sends audio to Groq.</p>
         </div>
         <div class="field">
           <p class="field-label" id="localEngineLabel">Local engine</p>
@@ -85,10 +85,10 @@
             <div>
               <b id="modelState">Checking…</b>
               <p class="hint" id="modelHint">
-                Parakeet runs on this PC — offline, private, no per-use cost.
+                Whistle runs on this PC — offline, private, no per-use cost.
               </p>
             </div>
-            <button id="dlModel" class="primary">Download (~660 MB)</button>
+            <button id="dlModel" class="primary">Download (~17 MB)</button>
           </div>
           <div id="dlBar" class="hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Local engine download progress">
             <div id="dlFill"></div>
@@ -419,8 +419,8 @@
         }
         if (!installed && !$("engineOpt").value) $("engineOpt").value = "cloud";
         $("engineHint").textContent = installed
-          ? "Local runs on this PC via ONNX; cloud sends audio to Groq."
-          : "Local runs on this PC via ONNX; cloud sends audio to Groq. Install the local model below to enable Auto and Local.";
+          ? "Local runs on this PC via the Whistle engine; cloud sends audio to Groq."
+          : "Local runs on this PC via the Whistle engine; cloud sends audio to Groq. Install the local model below to enable Auto and Local.";
       }
 
       function setModelUI(installed) {
@@ -434,7 +434,7 @@
         } else {
           $("modelState").textContent = "Not installed";
           $("modelHint").textContent =
-            "Download to enable offline dictation (~660 MB, one-time). Until then dictations use Groq.";
+            "Download to enable offline dictation (~17 MB, one-time). Until then dictations use Groq.";
         }
       }
 
@@ -498,7 +498,7 @@
           dlFailure($("modelState"), $("dlFile"), e);
           $("dlBar").classList.add("hidden");
         }
-        $("dlModel").textContent = "Download (~660 MB)";
+        $("dlModel").textContent = "Download (~17 MB)";
         dlStarted = false;
       };
 
